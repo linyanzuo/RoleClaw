@@ -3,6 +3,7 @@
 
 # Local runtime/output directories
 .cursor/
+.codex/
 .roleclaw/
 
 # Dependency directories
