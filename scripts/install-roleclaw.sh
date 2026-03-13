@@ -19,15 +19,16 @@ print_ide_matrix() {
 Supported IDE Tools (Step 3):
 
   1) Cursor                  [SUPPORTED]
-  2) Claude Code             [PLANNED]
-  3) VS Code (AgentSkills)   [PLANNED]
-  4) GitHub Copilot Chat     [PLANNED]
+  2) Codex                   [SUPPORTED]
+  3) Claude Code             [PLANNED]
+  4) VS Code (AgentSkills)   [PLANNED]
+  5) GitHub Copilot Chat     [PLANNED]
 
 EOF
 }
 
 select_supported_ide() {
-  local ides=("Cursor")
+  local ides=("Cursor" "Codex")
 
   echo "Choose IDE (currently installable options):"
   select _ide in "${ides[@]}"; do
@@ -35,6 +36,11 @@ select_supported_ide() {
       1)
         SELECTED_IDE="cursor"
         echo "Selected IDE: Cursor"
+        break
+        ;;
+      2)
+        SELECTED_IDE="codex"
+        echo "Selected IDE: Codex"
         break
         ;;
       *)
@@ -122,8 +128,8 @@ configure_project() {
 
   (
     cd "${project_dir}"
-    roleclaw init
-    node -e "const fs=require('fs');const p='.roleclaw/config.json';const data=JSON.parse(fs.readFileSync(p,'utf8'));data.registry=process.argv[1];fs.writeFileSync(p,JSON.stringify(data,null,2)+'\n');" "${registry_ref}"
+    ROLECLAW_REGISTRY="${registry_ref}" roleclaw init
+    node -e "const fs=require('fs');const p='.roleclaw/config.json';const data=JSON.parse(fs.readFileSync(p,'utf8'));data.registry=process.argv[1];data.ide=process.argv[2];fs.writeFileSync(p,JSON.stringify(data,null,2)+'\n');" "${registry_ref}" "${SELECTED_IDE}"
     roleclaw use-role "${SELECTED_ROLE}"
     roleclaw sync
     roleclaw doctor

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createInterface } from 'node:readline'
 import {
   existsSync,
   mkdirSync,
@@ -8,27 +9,35 @@ import {
   rmSync,
   writeFileSync,
 } from 'fs'
-import { basename, dirname, isAbsolute, join, resolve } from 'path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
+
+function question(rl, promptText, defaultValue = '') {
+  const suffix = defaultValue ? ` [${defaultValue}]` : ''
+  return new Promise((resolve) => {
+    rl.question(`${promptText}${suffix}: `, (answer) => {
+      resolve(answer.trim() || defaultValue)
+    })
+  })
+}
 
 const ROOT = process.cwd()
 const ROLECLAW_DIR = join(ROOT, '.roleclaw')
 const CONFIG_FILE = join(ROLECLAW_DIR, 'config.json')
 
-const CURSOR_DIR = join(ROOT, '.cursor')
-const SKILL_INSTALL_DIR = join(CURSOR_DIR, 'skills')
-const RULE_INSTALL_DIR = join(CURSOR_DIR, 'rules')
+const IDE_DIR_MAP = {
+  cursor: '.cursor',
+  codex: '.codex',
+}
 
 const ARTIFACT_KIND = {
   skill: {
     registryKey: 'packages',
     registryDir: 'assets/packages',
-    installDir: SKILL_INSTALL_DIR,
     markerFile: 'SKILL.md',
   },
   rule: {
     registryKey: 'rules',
     registryDir: 'assets/rules',
-    installDir: RULE_INSTALL_DIR,
     markerFile: 'RULE.md',
   },
 }
@@ -55,9 +64,50 @@ function defaultRegistryRef() {
   return 'https://raw.githubusercontent.com/YOUR_ORG/cursor-skills-registry/main'
 }
 
+/** List available roles from registry. Returns [{ roleId, name }]. Supports local and remote. */
+async function listAvailableRoles(registryRef) {
+  if (isUrl(registryRef)) {
+    try {
+      const rbac = await readJsonResource(registryRef, 'organization/rbac/roles.json')
+      const roles = rbac?.roles ?? {}
+      return Object.entries(roles).map(([roleId, r]) => ({
+        roleId,
+        name: r.description ?? r.name ?? roleId,
+      }))
+    } catch {
+      return []
+    }
+  }
+  const rolesDir = join(resolveLocalBase(registryRef), 'organization/roles')
+  if (!existsSync(rolesDir)) {
+    try {
+      const rbac = JSON.parse(readFileSync(join(resolveLocalBase(registryRef), 'organization/rbac/roles.json'), 'utf-8'))
+      const roles = rbac?.roles ?? {}
+      return Object.entries(roles).map(([roleId, r]) => ({
+        roleId,
+        name: r.description ?? r.name ?? roleId,
+      }))
+    } catch {
+      return []
+    }
+  }
+  return readdirSync(rolesDir, { withFileTypes: true })
+    .filter((e) => e.isFile() && e.name.endsWith('.json'))
+    .map((e) => {
+      try {
+        const data = JSON.parse(readFileSync(join(rolesDir, e.name), 'utf-8'))
+        return { roleId: data.roleId ?? e.name.replace('.json', ''), name: data.name ?? data.roleId }
+      } catch {
+        return { roleId: e.name.replace('.json', ''), name: e.name.replace('.json', '') }
+      }
+    })
+    .sort((a, b) => a.roleId.localeCompare(b.roleId))
+}
+
 function defaultConfig() {
   return {
     registry: defaultRegistryRef(),
+    ide: 'cursor',
     role: null,
     skills: {},
     rules: {},
@@ -69,8 +119,27 @@ function ensureRoleclawDir() {
   mkdirSync(ROLECLAW_DIR, { recursive: true })
 }
 
-function ensureCursorDirs() {
-  mkdirSync(CURSOR_DIR, { recursive: true })
+function resolveIde(config) {
+  const ide = (config.ide ?? 'cursor').toLowerCase()
+  if (!IDE_DIR_MAP[ide]) {
+    throw new Error(`Unsupported ide '${config.ide}'. Supported: ${Object.keys(IDE_DIR_MAP).join(', ')}`)
+  }
+  return ide
+}
+
+function getInstallPaths(config) {
+  const ide = resolveIde(config)
+  const ideRootDir = join(ROOT, IDE_DIR_MAP[ide])
+  return {
+    ide,
+    ideRootDir,
+    skillInstallDir: join(ideRootDir, 'skills'),
+    ruleInstallDir: join(ideRootDir, 'rules'),
+  }
+}
+
+function ensureIdeDirs(paths) {
+  mkdirSync(paths.ideRootDir, { recursive: true })
 }
 
 function writeConfig(data) {
@@ -292,6 +361,22 @@ function listInstalledDirs(baseDir) {
     .sort()
 }
 
+/** Recursively list all files under dir, paths relative to dir. */
+function listFilesRecursive(dir, baseDir = dir) {
+  if (!existsSync(dir)) return []
+  const entries = readdirSync(dir, { withFileTypes: true })
+  const files = []
+  for (const entry of entries) {
+    const fullPath = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      files.push(...listFilesRecursive(fullPath, baseDir))
+    } else if (entry.isFile()) {
+      files.push(relative(baseDir, fullPath).replace(/\\/g, '/'))
+    }
+  }
+  return files.sort()
+}
+
 function printDeclaredAndInstalled(title, declared, installDir, markerFile) {
   const installed = new Set(listInstalledDirs(installDir))
   const entries = Object.entries(declared)
@@ -315,15 +400,78 @@ function printDeclaredAndInstalled(title, declared, installDir, markerFile) {
   }
 }
 
-async function cmdInit() {
+function parseInitRegistry(args) {
+  const i = args.indexOf('--registry')
+  if (i >= 0 && args[i + 1]) return args[i + 1]
+  const eq = args.find((a) => a.startsWith('--registry='))
+  if (eq) return eq.slice('--registry='.length)
+  return process.env.ROLECLAW_REGISTRY || defaultRegistryRef()
+}
+
+async function cmdInit(args = []) {
   if (existsSync(CONFIG_FILE)) {
     console.log('roleclaw config already exists, skip')
     return
   }
 
-  writeConfig(defaultConfig())
-  console.log('created .roleclaw/config.json')
-  console.log(`registry default: ${defaultRegistryRef()}`)
+  if (!process.stdin.isTTY) {
+    console.error('roleclaw init requires interactive mode. Run in a terminal.')
+    process.exitCode = 1
+    return
+  }
+
+  const registryRef = parseInitRegistry(args)
+  const config = defaultConfig()
+  config.registry = registryRef
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+
+  console.log('\nSupported IDEs:')
+  const ideList = Object.keys(IDE_DIR_MAP)
+  ideList.forEach((ide, i) => {
+    console.log(`  ${i + 1}. ${ide}`)
+  })
+  const ideChoice = await question(rl, '\nSelect IDE (1-2)', '1')
+  const ideIndex = parseInt(ideChoice, 10)
+  config.ide = ideList[ideIndex - 1] ?? 'cursor'
+
+  const roles = await listAvailableRoles(registryRef)
+  console.log('\nAvailable roles:')
+  if (roles.length === 0) {
+    console.log('  (none found in registry)')
+  } else {
+    roles.forEach((r, i) => {
+      console.log(`  ${i + 1}. ${r.roleId} (${r.name})`)
+    })
+    console.log(`  ${roles.length + 1}. (skip, set later)`)
+    const roleChoice = await question(rl, `\nSelect role (1-${roles.length + 1})`, String(roles.length + 1))
+    const roleIndex = parseInt(roleChoice, 10)
+    if (roleIndex >= 1 && roleIndex <= roles.length) {
+      config.role = roles[roleIndex - 1].roleId
+    }
+  }
+
+  rl.close()
+
+  if (config.role) {
+    try {
+      const roleConfig = await fetchRoleConfig(config.registry, config, config.role)
+      config.skills = { ...roleConfig.requiredSkills }
+      config.rules = { ...roleConfig.requiredRules }
+    } catch {
+      config.skills = {}
+      config.rules = {}
+    }
+  }
+
+  writeConfig(config)
+  console.log('\ncreated .roleclaw/config.json')
+  console.log(`registry: ${config.registry}`)
+  console.log(`ide: ${config.ide}`)
+  console.log(`role: ${config.role ?? '(none)'}`)
+  if (config.role) {
+    console.log('run `roleclaw sync` to install skills and rules')
+  }
 }
 
 async function cmdUseRole(role) {
@@ -339,6 +487,7 @@ async function cmdUseRole(role) {
   config.rules = { ...roleConfig.requiredRules }
   writeConfig(config)
 
+  console.log(`ide target: ${resolveIde(config)}`)
   console.log(`role set to: ${role}`)
   console.log(`role source: ${roleConfig.source}`)
   console.log(`default skills: ${Object.keys(config.skills).join(', ') || '(none)'}`)
@@ -350,19 +499,22 @@ async function cmdSync() {
   const config = readConfig()
   const { skills, rules } = await resolveDesiredArtifacts(config)
   const registry = await fetchRegistry(config.registry)
+  const installPaths = getInstallPaths(config)
 
-  ensureCursorDirs()
-  mkdirSync(SKILL_INSTALL_DIR, { recursive: true })
-  mkdirSync(RULE_INSTALL_DIR, { recursive: true })
+  ensureIdeDirs(installPaths)
+  mkdirSync(installPaths.skillInstallDir, { recursive: true })
+  mkdirSync(installPaths.ruleInstallDir, { recursive: true })
 
   for (const [name, requestedVersion] of Object.entries(skills)) {
     const resolvedVersion = resolveVersion(registry.packages, name, requestedVersion, 'Skill')
+    ARTIFACT_KIND.skill.installDir = installPaths.skillInstallDir
     await installArtifact(config.registry, 'skill', name, resolvedVersion)
     config.skills[name] = resolvedVersion
   }
 
   for (const [name, requestedVersion] of Object.entries(rules)) {
     const resolvedVersion = resolveVersion(registry.rules, name, requestedVersion, 'Rule')
+    ARTIFACT_KIND.rule.installDir = installPaths.ruleInstallDir
     await installArtifact(config.registry, 'rule', name, resolvedVersion)
     config.rules[name] = resolvedVersion
   }
@@ -374,22 +526,25 @@ async function cmdSync() {
 async function cmdList() {
   const config = readConfigOrDefault()
   const { skills, rules } = await resolveDesiredArtifacts(config)
+  const installPaths = getInstallPaths(config)
 
   console.log(`registry: ${config.registry}`)
+  console.log(`ide: ${resolveIde(config)}`)
   console.log(`role: ${config.role ?? '(none)'}`)
 
-  printDeclaredAndInstalled('declared skills', skills, SKILL_INSTALL_DIR, 'SKILL.md')
-  printDeclaredAndInstalled('declared rules', rules, RULE_INSTALL_DIR, 'RULE.md')
+  printDeclaredAndInstalled('declared skills', skills, installPaths.skillInstallDir, 'SKILL.md')
+  printDeclaredAndInstalled('declared rules', rules, installPaths.ruleInstallDir, 'RULE.md')
 }
 
 async function cmdUpdate(name) {
   const config = readConfig()
   const { skills, rules } = await resolveDesiredArtifacts(config)
   const registry = await fetchRegistry(config.registry)
+  const installPaths = getInstallPaths(config)
 
-  ensureCursorDirs()
-  mkdirSync(SKILL_INSTALL_DIR, { recursive: true })
-  mkdirSync(RULE_INSTALL_DIR, { recursive: true })
+  ensureIdeDirs(installPaths)
+  mkdirSync(installPaths.skillInstallDir, { recursive: true })
+  mkdirSync(installPaths.ruleInstallDir, { recursive: true })
 
   const skillTargets = name ? (skills[name] ? [name] : []) : Object.keys(skills)
   const ruleTargets = name ? (rules[name] ? [name] : []) : Object.keys(rules)
@@ -400,12 +555,14 @@ async function cmdUpdate(name) {
 
   for (const item of skillTargets) {
     const latest = resolveVersion(registry.packages, item, 'latest', 'Skill')
+    ARTIFACT_KIND.skill.installDir = installPaths.skillInstallDir
     await installArtifact(config.registry, 'skill', item, latest)
     config.skills[item] = latest
   }
 
   for (const item of ruleTargets) {
     const latest = resolveVersion(registry.rules, item, 'latest', 'Rule')
+    ARTIFACT_KIND.rule.installDir = installPaths.ruleInstallDir
     await installArtifact(config.registry, 'rule', item, latest)
     config.rules[item] = latest
   }
@@ -427,6 +584,7 @@ async function cmdDoctor() {
   console.log('[ok] config exists')
 
   const config = readConfig()
+  const installPaths = getInstallPaths(config)
   let registry
 
   try {
@@ -449,10 +607,10 @@ async function cmdDoctor() {
     console.log('[ok] no role selected yet')
   }
 
-  ensureCursorDirs()
-  mkdirSync(SKILL_INSTALL_DIR, { recursive: true })
-  mkdirSync(RULE_INSTALL_DIR, { recursive: true })
-  console.log('[ok] install directories are ready')
+  ensureIdeDirs(installPaths)
+  mkdirSync(installPaths.skillInstallDir, { recursive: true })
+  mkdirSync(installPaths.ruleInstallDir, { recursive: true })
+  console.log(`[ok] install directories are ready (${installPaths.ideRootDir})`)
 
   const { skills, rules } = await resolveDesiredArtifacts(config)
 
@@ -469,7 +627,7 @@ async function cmdDoctor() {
       continue
     }
 
-    if (existsSync(join(SKILL_INSTALL_DIR, name, 'SKILL.md'))) {
+    if (existsSync(join(installPaths.skillInstallDir, name, 'SKILL.md'))) {
       console.log(`[ok] installed skill is present: ${name}`)
     } else {
       console.log(`[fail] installed skill is missing: ${name}`)
@@ -490,7 +648,7 @@ async function cmdDoctor() {
       continue
     }
 
-    if (existsSync(join(RULE_INSTALL_DIR, name, 'RULE.md'))) {
+    if (existsSync(join(installPaths.ruleInstallDir, name, 'RULE.md'))) {
       console.log(`[ok] installed rule is present: ${name}`)
     } else {
       console.log(`[fail] installed rule is missing: ${name}`)
@@ -522,9 +680,11 @@ async function cmdAdd(name, version = 'latest') {
   const config = readConfigOrDefault()
   const registry = await fetchRegistry(config.registry)
   const resolvedVersion = resolveVersion(registry.packages, name, version, 'Skill')
+  const installPaths = getInstallPaths(config)
 
-  ensureCursorDirs()
-  mkdirSync(SKILL_INSTALL_DIR, { recursive: true })
+  ensureIdeDirs(installPaths)
+  mkdirSync(installPaths.skillInstallDir, { recursive: true })
+  ARTIFACT_KIND.skill.installDir = installPaths.skillInstallDir
   await installArtifact(config.registry, 'skill', name, resolvedVersion)
 
   config.skills[name] = resolvedVersion
@@ -539,8 +699,9 @@ async function cmdRemove(name) {
   }
 
   const config = readConfig()
-  rmSync(join(SKILL_INSTALL_DIR, name), { recursive: true, force: true })
-  rmSync(join(RULE_INSTALL_DIR, name), { recursive: true, force: true })
+  const installPaths = getInstallPaths(config)
+  rmSync(join(installPaths.skillInstallDir, name), { recursive: true, force: true })
+  rmSync(join(installPaths.ruleInstallDir, name), { recursive: true, force: true })
 
   if (config.skills?.[name]) {
     delete config.skills[name]
@@ -551,6 +712,76 @@ async function cmdRemove(name) {
   writeConfig(config)
 
   console.log(`removed artifact ${name} (if existed)`)
+}
+
+/**
+ * Push IDE-installed skills/rules back to local registry.
+ * Only works when config.registry is a local path (not URL).
+ */
+async function cmdPush(name) {
+  const config = readConfig()
+  if (isUrl(config.registry)) {
+    throw new Error(
+      'push only works with local registry. Your registry is a URL. ' +
+        'To contribute changes, edit the registry repo directly and submit a PR.',
+    )
+  }
+
+  const registryBase = resolveLocalBase(config.registry)
+  const { skills, rules } = await resolveDesiredArtifacts(config)
+  const installPaths = getInstallPaths(config)
+
+  const skillTargets = name ? (skills[name] ? [name] : []) : Object.keys(skills)
+  const ruleTargets = name ? (rules[name] ? [name] : []) : Object.keys(rules)
+
+  if (name && !skillTargets.length && !ruleTargets.length) {
+    throw new Error(`'${name}' is not declared in current skills/rules`)
+  }
+
+  function pushArtifact(kind, artifactName, version) {
+    const kindConfig = ARTIFACT_KIND[kind]
+    const ideDir = kind === 'skill' ? installPaths.skillInstallDir : installPaths.ruleInstallDir
+    const srcDir = join(ideDir, artifactName)
+    const destDir = join(registryBase, kindConfig.registryDir, artifactName, version)
+
+    if (!existsSync(srcDir)) {
+      throw new Error(`${kind} ${artifactName} not found in ${ideDir}`)
+    }
+
+    const markerFile = kindConfig.markerFile
+    const allFiles = listFilesRecursive(srcDir, srcDir)
+    if (!allFiles.includes(markerFile)) {
+      throw new Error(`${kind} ${artifactName} missing ${markerFile}`)
+    }
+
+    const files = [markerFile, ...allFiles.filter((f) => f !== markerFile)]
+    mkdirSync(destDir, { recursive: true })
+
+    for (const file of files) {
+      const srcPath = join(srcDir, file)
+      const destPath = join(destDir, file)
+      if (existsSync(srcPath)) {
+        mkdirSync(dirname(destPath), { recursive: true })
+        writeFileSync(destPath, readFileSync(srcPath, 'utf-8'), 'utf-8')
+      }
+    }
+
+    writeFileSync(join(destDir, 'files.json'), JSON.stringify(files, null, 2) + '\n', 'utf-8')
+    process.stdout.write(`Pushed ${kind} ${artifactName}@${version} `)
+    console.log('ok')
+  }
+
+  for (const item of skillTargets) {
+    const version = config.skills?.[item] ?? skills[item] ?? '1.0.0'
+    pushArtifact('skill', item, version)
+  }
+
+  for (const item of ruleTargets) {
+    const version = config.rules?.[item] ?? rules[item] ?? '1.0.0'
+    pushArtifact('rule', item, version)
+  }
+
+  console.log('push complete. Run `git add` and `git commit` in the registry to save changes.')
 }
 
 async function cmdSearch(query = '') {
@@ -607,17 +838,22 @@ Usage:
   roleclaw <command> [args]
 
 Primary commands:
-  init                    Create .roleclaw/config.json
+  init [--registry PATH]   Create .roleclaw/config.json (interactive; use ROLECLAW_REGISTRY or --registry for external registry)
   use-role <role>         Select role and write default skills/rules
   sync                    Install declared skills and rules
   list                    List declared and installed skills/rules
   update [name]           Update one artifact or all artifacts
+  push [name]             Push IDE edits back to local registry (local only)
   doctor                  Check config, registry, role, and local installs
 
 Additional commands:
   add <skill> [version]   Add and install one skill
   remove <name>           Remove artifact from skills/rules
   search [keyword]        Search skills and rules in registry
+  help, --help, -h        Show this help
+
+Config keys:
+  ide                     Target IDE runtime directory (cursor|codex)
 `
 
 const COMMANDS = {
@@ -626,6 +862,7 @@ const COMMANDS = {
   sync: cmdSync,
   list: cmdList,
   update: cmdUpdate,
+  push: cmdPush,
   doctor: cmdDoctor,
   add: cmdAdd,
   remove: cmdRemove,
@@ -635,9 +872,14 @@ const COMMANDS = {
 export async function main(argv = process.argv) {
   const [, , command, ...args] = argv
 
-  if (!command || !COMMANDS[command]) {
+  if (!command || command === 'help' || command === '--help' || command === '-h') {
     console.log(HELP)
-    process.exit(command ? 1 : 0)
+    process.exit(0)
+  }
+
+  if (!COMMANDS[command]) {
+    console.log(HELP)
+    process.exit(1)
   }
 
   await COMMANDS[command](...args)

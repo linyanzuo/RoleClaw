@@ -35,7 +35,6 @@ RoleClaw 阶段一的私有 Skills 仓库模板。
 - `registry.json`
 - `organization/roles/*.json`
 - `organization/rbac/roles.json`
-- `role-index/*.json`
 - `schemas/*.json`
 - `templates/*`
 
@@ -43,7 +42,6 @@ RoleClaw 阶段一的私有 Skills 仓库模板。
 
 - 版本、标签、检索信息放到 `registry.json`
 - 岗位与 Skill/Rule 的绑定关系放到 `organization/roles/*.json` 和 `organization/rbac/roles.json`
-- 岗位视图统一放到 `role-index/*.json`（仅视图索引，不作为运行时数据源）
 - 模板和 schema 只服务仓库维护，不进入运行时 Skill 内容
 
 ## 目录结构
@@ -70,8 +68,6 @@ registry-template/
 │   │   └── <role-id>.json                 # 岗位配置样例与正式配置
 │   └── rbac/
 │       └── roles.json                     # RBAC 兼容聚合配置
-├── role-index/                            # 岗位视图索引（只读视图）
-│   └── <role-id>.json
 ├── templates/
 │   ├── role-template.json
 │   └── skill-template/
@@ -88,7 +84,6 @@ registry-template/
 - `assets/` 是统一资产层目录，后续升级资源管理能力时保持路径稳定。
 - `organization/roles/` 是岗位配置源文件目录，用来表达“岗位定义”。
 - `organization/rbac/roles.json` 是 RBAC 兼容聚合文件。
-- `role-index/` 是岗位视图目录，用于运营查看，不作为运行时数据源。
 
 ## Skill / Rule 存储规则
 
@@ -279,11 +274,26 @@ description: "Git 工作流规范：提交、分支、PR 与提交前检查。"
 
 ## 项目中接入
 
+### 首次初始化
+
+在项目根目录执行 `roleclaw init`，按提示选择 IDE 和岗位。若项目内无 `registry-template` 目录，需指定 Registry 路径：
+
+```bash
+# 方式一：环境变量
+ROLECLAW_REGISTRY=/path/to/registry-template roleclaw init
+
+# 方式二：命令行参数
+roleclaw init --registry /path/to/registry-template
+```
+
+### 配置
+
 在项目根目录的 `.roleclaw/config.json` 中配置：
 
 ```json
 {
   "registry": "https://raw.githubusercontent.com/YOUR_ORG/cursor-skills-registry/main",
+  "ide": "cursor",
   "role": "frontend-engineer",
   "rules": {
     "engineering-rules-baseline": "1.0.0"
@@ -299,6 +309,7 @@ description: "Git 工作流规范：提交、分支、PR 与提交前检查。"
 ```text
 .roleclaw/config.json
   ├─ registry
+  ├─ ide (cursor | codex)
   ├─ role
   ├─ skills (项目显式声明)
   ├─ rules  (项目显式声明)
@@ -320,8 +331,8 @@ description: "Git 工作流规范：提交、分支、PR 与提交前检查。"
                                          ├─ 解析版本（latest / ^major / 精确版本）
                                          ├─ 拉取 assets/packages/<skill>/<ver>/files.json
                                          ├─ 拉取 assets/rules/<rule>/<ver>/files.json
-                                         ├─ 安装到 .cursor/skills/<skill>/
-                                         └─ 安装到 .cursor/rules/<rule>/
+                                         ├─ Cursor: 安装到 .cursor/skills/<skill>/ 与 .cursor/rules/<rule>/
+                                         └─ Codex:  安装到 .codex/skills/<skill>/ 与 .codex/rules/<rule>/
 ```
 
 一句话理解：
@@ -341,3 +352,14 @@ roleclaw sync
 ```bash
 roleclaw use-role frontend-engineer
 ```
+
+## IDE 编辑回写 Registry（push）
+
+当 Registry 为**本地路径**（如 `./registry-template`）时，用户可在 IDE 中直接编辑 `.cursor/skills/<name>/` 或 `.cursor/rules/<name>/`，然后执行：
+
+```bash
+roleclaw push              # 回写所有已声明的 skills/rules
+roleclaw push git-workflow # 仅回写指定 artifact
+```
+
+`push` 会将 IDE 中的修改写回 Registry 对应版本目录，并更新 `files.json`。完成后执行 `git add` 和 `git commit` 持久化变更，其他伙伴通过 `git pull` + `roleclaw sync` 即可获得更新。
