@@ -1,0 +1,16 @@
+{
+  "roleId": "ui-designer",
+  "viewName": "UI 设计师",
+  "skills": {
+    "required": [
+      "git-workflow"
+    ],
+    "optional": []
+  },
+  "rules": {
+    "required": [
+      "engineering-rules-baseline"
+    ],
+    "optional": []
+  }
+}

@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROLECLAW_REPO="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ROLECLAW_ENTRY="${ROLECLAW_REPO}/scripts/roleclaw.mjs"
-ROLE_DIR="${ROLECLAW_REPO}/registry-template/roles"
+ROLE_DIR="${ROLECLAW_REPO}/registry-template/organization/roles"
 DEFAULT_REGISTRY="${ROLECLAW_REPO}/registry-template"
 
 print_title() {

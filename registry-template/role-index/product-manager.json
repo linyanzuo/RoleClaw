@@ -1,0 +1,16 @@
+{
+  "roleId": "product-manager",
+  "viewName": "产品经理",
+  "skills": {
+    "required": [
+      "git-workflow"
+    ],
+    "optional": []
+  },
+  "rules": {
+    "required": [
+      "engineering-rules-baseline"
+    ],
+    "optional": []
+  }
+}

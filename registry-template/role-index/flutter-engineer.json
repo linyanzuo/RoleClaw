@@ -1,0 +1,16 @@
+{
+  "roleId": "flutter-engineer",
+  "viewName": "Flutter 工程师",
+  "skills": {
+    "required": [
+      "git-workflow"
+    ],
+    "optional": []
+  },
+  "rules": {
+    "required": [
+      "engineering-rules-baseline"
+    ],
+    "optional": []
+  }
+}

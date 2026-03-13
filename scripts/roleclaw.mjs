@@ -21,13 +21,13 @@ const RULE_INSTALL_DIR = join(CURSOR_DIR, 'rules')
 const ARTIFACT_KIND = {
   skill: {
     registryKey: 'packages',
-    registryDir: 'packages',
+    registryDir: 'assets/packages',
     installDir: SKILL_INSTALL_DIR,
     markerFile: 'SKILL.md',
   },
   rule: {
     registryKey: 'rules',
-    registryDir: 'rules',
+    registryDir: 'assets/rules',
     installDir: RULE_INSTALL_DIR,
     markerFile: 'RULE.md',
   },
@@ -148,7 +148,7 @@ async function fetchRegistry(baseRef) {
 
 async function fetchRbacRoles(baseRef) {
   try {
-    return await readJsonResource(baseRef, 'rbac/roles.json')
+    return await readJsonResource(baseRef, 'organization/rbac/roles.json')
   } catch {
     return null
   }
@@ -167,8 +167,8 @@ async function fetchRoleConfig(baseRef, config, role) {
   }
 
   try {
-    // Canonical role source: roles/<role>.json from registry.
-    const roleConfig = await readJsonResource(baseRef, `roles/${role}.json`)
+    // Canonical role source: organization/roles/<role>.json from registry.
+    const roleConfig = await readJsonResource(baseRef, `organization/roles/${role}.json`)
     return {
       roleId: roleConfig.roleId ?? role,
       source: 'roles',
@@ -176,11 +176,11 @@ async function fetchRoleConfig(baseRef, config, role) {
       requiredRules: normalizeArtifactMap(roleConfig.requiredRules),
     }
   } catch {
-    // Backward-compatible fallback for RBAC-only layout.
+    // Fallback for RBAC-only layout.
     const rbac = await fetchRbacRoles(baseRef)
     const roleConfig = rbac?.roles?.[role]
     if (!roleConfig) {
-      throw new Error(`Role '${role}' not found in config.roleProfiles, roles/ or rbac/roles.json`)
+      throw new Error(`Role '${role}' not found in config.roleProfiles, organization/roles/ or organization/rbac/roles.json`)
     }
 
     return {

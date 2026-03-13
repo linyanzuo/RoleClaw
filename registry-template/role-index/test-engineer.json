@@ -1,0 +1,16 @@
+{
+  "roleId": "test-engineer",
+  "viewName": "测试工程师",
+  "skills": {
+    "required": [
+      "git-workflow"
+    ],
+    "optional": []
+  },
+  "rules": {
+    "required": [
+      "engineering-rules-baseline"
+    ],
+    "optional": []
+  }
+}

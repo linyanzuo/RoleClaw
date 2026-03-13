@@ -8,7 +8,7 @@
 
 | 命令 | 作用 | 备注 |
 |---|---|---|
-| `use-role` | 按岗位写入默认 Skills/Rules | 优先 `config.roleProfiles`，其次 `roles/<role>.json` |
+| `use-role` | 按岗位写入默认 Skills/Rules | 优先 `config.roleProfiles`，其次 `organization/roles/<role>.json` |
 | `sync` | 把声明的 Skills/Rules 安装到 `.cursor/` | skills -> `.cursor/skills/`，rules -> `.cursor/rules/` |
 | `list` | 查看声明与安装状态 | 同时展示缺失与额外安装项 |
 | `update` | 更新到最新版本 | 支持指定单个 artifact 或全部更新 |
@@ -37,8 +37,8 @@ function defaultRegistryRef() {
 项目配置入口统一为 `.roleclaw/config.json`，阶段一岗位来源优先级如下：
 
 1. `.roleclaw/config.json` 的 `roleProfiles`
-2. `registry-template/roles/<role>.json`
-3. `registry-template/rbac/roles.json`（兼容）
+2. `registry-template/organization/roles/<role>.json`
+3. `registry-template/organization/rbac/roles.json`（兼容）
 
 ```js
 async function fetchRoleConfig(baseRef, config, role) {
@@ -46,9 +46,9 @@ async function fetchRoleConfig(baseRef, config, role) {
     return config.roleProfiles[role]
   }
   try {
-    return await readJsonResource(baseRef, `roles/${role}.json`)
+    return await readJsonResource(baseRef, `organization/roles/${role}.json`)
   } catch {
-    const rbac = await fetchRbacRoles(baseRef)
+    const rbac = await fetchRbacRoles(baseRef) // organization/rbac/roles.json
     // ... fallback 到 rbac.roles[role]
   }
 }
@@ -93,6 +93,6 @@ for (const [name, version] of Object.entries(roleConfig.requiredRules)) {
 
 - 继续保持 `SKILL.md` 仅包含 AI 运行时最小信息
 - `RULE.md` 同样保持最小运行时信息，不混入治理字段
-- 元数据扩展优先加在 `registry.json` / `roles/*.json`
+- 元数据扩展优先加在 `registry.json` / `organization/roles/*.json`
 - 新增命令时先补 `doctor` 对应检查项，避免功能可用但不可诊断
 - 命令行为变更后，同步更新“核心命令表”和示例代码片段

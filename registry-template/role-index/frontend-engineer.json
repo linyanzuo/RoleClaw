@@ -1,0 +1,17 @@
+{
+  "roleId": "frontend-engineer",
+  "viewName": "前端工程师",
+  "skills": {
+    "required": [
+      "git-workflow",
+      "frontend-coding-standard"
+    ],
+    "optional": []
+  },
+  "rules": {
+    "required": [
+      "engineering-rules-baseline"
+    ],
+    "optional": []
+  }
+}

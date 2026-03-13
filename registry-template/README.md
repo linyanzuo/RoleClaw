@@ -19,8 +19,8 @@ RoleClaw 阶段一的私有 Skills 仓库模板。
 
 这些文件可能被 IDE / AI 直接读取，要求尽量稳定、简洁、少放治理信息。
 
-- `packages/<skill>/<version>/SKILL.md`
-- `packages/<skill>/<version>/*.md`
+- `assets/packages/<skill>/<version>/SKILL.md`
+- `assets/packages/<skill>/<version>/*.md`
 
 运行时原则：
 
@@ -33,15 +33,17 @@ RoleClaw 阶段一的私有 Skills 仓库模板。
 这些文件用于安装、检索、岗位绑定、版本管理和仓库维护，不要求 AI 直接消费。
 
 - `registry.json`
-- `roles/*.json`
-- `rbac/roles.json`
+- `organization/roles/*.json`
+- `organization/rbac/roles.json`
+- `role-index/*.json`
 - `schemas/*.json`
 - `templates/*`
 
 治理原则：
 
 - 版本、标签、检索信息放到 `registry.json`
-- 岗位与 Skill/Rule 的绑定关系放到 `roles/*.json` 和 `rbac/roles.json`
+- 岗位与 Skill/Rule 的绑定关系放到 `organization/roles/*.json` 和 `organization/rbac/roles.json`
+- 岗位视图统一放到 `role-index/*.json`（仅视图索引，不作为运行时数据源）
 - 模板和 schema 只服务仓库维护，不进入运行时 Skill 内容
 
 ## 目录结构
@@ -50,22 +52,26 @@ RoleClaw 阶段一的私有 Skills 仓库模板。
 registry-template/
 ├── README.md
 ├── registry.json                          # 全量 Skill/Rule 索引
-├── packages/                              # Skill 实际发布目录
-│   └── <skill-name>/
-│       └── <version>/
-│           ├── files.json
-│           ├── SKILL.md
-│           └── *.md
-├── rules/                                 # Rule 实际发布目录
-│   └── <rule-name>/
-│       └── <version>/
-│           ├── files.json
-│           ├── RULE.md
-│           └── *.md
-├── roles/                                 # 岗位配置样例与正式配置
+├── assets/
+│   ├── packages/                          # Skill 实际发布目录
+│   │   └── <skill-name>/
+│   │       └── <version>/
+│   │           ├── files.json
+│   │           ├── SKILL.md
+│   │           └── *.md
+│   └── rules/                             # Rule 实际发布目录
+│       └── <rule-name>/
+│           └── <version>/
+│               ├── files.json
+│               ├── RULE.md
+│               └── *.md
+├── organization/
+│   ├── roles/
+│   │   └── <role-id>.json                 # 岗位配置样例与正式配置
+│   └── rbac/
+│       └── roles.json                     # RBAC 兼容聚合配置
+├── role-index/                            # 岗位视图索引（只读视图）
 │   └── <role-id>.json
-├── rbac/
-│   └── roles.json                         # 兼容当前批量同步逻辑
 ├── templates/
 │   ├── role-template.json
 │   └── skill-template/
@@ -79,16 +85,17 @@ registry-template/
 
 说明：
 
-- `packages/` 是当前可运行结构，便于后续 `Step 3` 直接接 CLI。
-- `roles/` 是岗位配置源文件目录，用来表达“岗位定义”。
-- `rbac/roles.json` 是面向当前脚本的兼容聚合文件。
+- `assets/` 是统一资产层目录，后续升级资源管理能力时保持路径稳定。
+- `organization/roles/` 是岗位配置源文件目录，用来表达“岗位定义”。
+- `organization/rbac/roles.json` 是 RBAC 兼容聚合文件。
+- `role-index/` 是岗位视图目录，用于运营查看，不作为运行时数据源。
 
 ## Skill / Rule 存储规则
 
 每个 Skill 使用如下目录结构：
 
 ```text
-packages/<skill-name>/<version>/
+assets/packages/<skill-name>/<version>/
 ├── files.json
 ├── SKILL.md
 └── <resource-files>
@@ -109,7 +116,7 @@ packages/<skill-name>/<version>/
 每个 Rule 使用如下目录结构：
 
 ```text
-rules/<rule-name>/<version>/
+assets/rules/<rule-name>/<version>/
 ├── files.json
 ├── RULE.md
 └── <resource-files>
@@ -117,7 +124,7 @@ rules/<rule-name>/<version>/
 
 ## 岗位配置文件格式
 
-岗位配置文件放在 `roles/` 目录，文件名使用 `<role-id>.json`。
+岗位配置文件放在 `organization/roles/` 目录，文件名使用 `<role-id>.json`。
 
 示例：
 
@@ -155,7 +162,7 @@ rules/<rule-name>/<version>/
 
 1. `SKILL.md`：只放给 AI 用的最小信息
 2. `registry.json`：只放索引、检索、版本信息
-3. `roles/*.json` / `rbac/roles.json`：只放岗位绑定关系（Skills + Rules）
+3. `organization/roles/*.json` / `organization/rbac/roles.json`：只放岗位绑定关系（Skills + Rules）
 
 `SKILL.md` frontmatter 规范：
 
@@ -191,20 +198,20 @@ description: "Git 工作流规范：提交、分支、PR 与提交前检查。"
 
 - `SKILL.md`：面向 AI 运行时消费，尽量简洁稳定
 - `registry.json`：面向安装、搜索、版本解析、标签管理
-- `roles/*.json` / `rbac/roles.json`：面向岗位与 Skill/Rule 的绑定关系
+- `organization/roles/*.json` / `organization/rbac/roles.json`：面向岗位与 Skill/Rule 的绑定关系
 
 不建议写入 `SKILL.md` 的字段：
 
 - `version`：已经由目录版本和 `registry.json` 表达
 - `tags`：用于检索，应放在 `registry.json`
-- `roleScope`：属于岗位绑定，应放在 `roles/*.json` 或 `rbac/roles.json`
+- `roleScope`：属于岗位绑定，应放在 `organization/roles/*.json` 或 `organization/rbac/roles.json`
 - `owner`：属于治理信息，阶段一先不进入运行时文件
 
 一句话原则：
 
 - `SKILL.md` 是给 AI 看的
 - `registry.json` 是给安装和检索逻辑看的
-- `roles/*.json` 是给岗位配置逻辑看的（技能与规则）
+- `organization/roles/*.json` 是给岗位配置逻辑看的（技能与规则）
 
 ## 命名规则
 
@@ -250,7 +257,7 @@ description: "Git 工作流规范：提交、分支、PR 与提交前检查。"
 阶段一先采用轻量流程：
 
 1. 新建或修改 Skill 时，必须同时更新对应版本目录与 `registry.json`
-2. 若变更岗位绑定关系，必须同步更新 `roles/*.json` 和 `rbac/roles.json`
+2. 若变更岗位绑定关系，必须同步更新 `organization/roles/*.json` 和 `organization/rbac/roles.json`
 3. 提交说明中必须写清楚变更原因，而不只是“更新 Skill”
 4. 至少由 1 位岗位负责人或维护人完成审核
 5. 未经验证的临时经验，不直接进入 `requiredSkills` / `requiredRules`
@@ -268,7 +275,7 @@ description: "Git 工作流规范：提交、分支、PR 与提交前检查。"
 2. 补全 `SKILL.md` 和资源文件
 3. 更新 `files.json`
 4. 在 `registry.json` 中登记元数据
-5. 如需要绑定岗位，更新 `roles/*.json` 与 `rbac/roles.json`
+5. 如需要绑定岗位，更新 `organization/roles/*.json` 与 `organization/rbac/roles.json`
 
 ## 项目中接入
 
@@ -300,8 +307,8 @@ description: "Git 工作流规范：提交、分支、PR 与提交前检查。"
         ├─ 若 roleProfiles[role] 存在 -> 直接取该岗位 skills/rules
         │
         └─ 否则从 registry 读取岗位定义
-             ├─ roles/<role>.json (主路径)
-             └─ rbac/roles.json   (兼容回退)
+             ├─ organization/roles/<role>.json (主路径)
+             └─ organization/rbac/roles.json   (兼容回退)
                     │
                     └─ 得到岗位 requiredSkills / requiredRules
                            │
@@ -311,8 +318,8 @@ description: "Git 工作流规范：提交、分支、PR 与提交前检查。"
                                     └─ roleclaw sync
                                          ├─ 读 registry.json（packages + rules 索引）
                                          ├─ 解析版本（latest / ^major / 精确版本）
-                                         ├─ 拉取 packages/<skill>/<ver>/files.json
-                                         ├─ 拉取 rules/<rule>/<ver>/files.json
+                                         ├─ 拉取 assets/packages/<skill>/<ver>/files.json
+                                         ├─ 拉取 assets/rules/<rule>/<ver>/files.json
                                          ├─ 安装到 .cursor/skills/<skill>/
                                          └─ 安装到 .cursor/rules/<rule>/
 ```
@@ -320,8 +327,8 @@ description: "Git 工作流规范：提交、分支、PR 与提交前检查。"
 一句话理解：
 
 - `.roleclaw/config.json` 决定“这个项目要用什么”；
-- `roles/*.json` / `rbac/roles.json` 决定“这个岗位默认应带什么”；
-- `registry.json` + `packages/` + `rules/` 决定“具体版本和文件从哪里来”。
+- `organization/roles/*.json` / `organization/rbac/roles.json` 决定“这个岗位默认应带什么”；
+- `registry.json` + `assets/packages/` + `assets/rules/` 决定“具体版本和文件从哪里来”。
 
 然后运行：
 
