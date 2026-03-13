@@ -1,0 +1,16 @@
+{
+  "roleId": "ui-designer",
+  "name": "UI 设计师",
+  "department": "software",
+  "description": "负责界面设计、交互方案输出与设计协作。",
+  "requiredSkills": [
+    "git-workflow"
+  ],
+  "optionalSkills": [],
+  "requiredRules": [
+    "engineering-rules-baseline"
+  ],
+  "optionalRules": [],
+  "extends": [],
+  "status": "active"
+}

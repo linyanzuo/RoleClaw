@@ -1,0 +1,16 @@
+{
+  "roleId": "product-manager",
+  "name": "产品经理",
+  "department": "software",
+  "description": "负责需求定义、方案沟通、优先级管理与跨团队协作。",
+  "requiredSkills": [
+    "git-workflow"
+  ],
+  "optionalSkills": [],
+  "requiredRules": [
+    "engineering-rules-baseline"
+  ],
+  "optionalRules": [],
+  "extends": [],
+  "status": "active"
+}

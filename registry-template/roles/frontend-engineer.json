@@ -1,0 +1,17 @@
+{
+  "roleId": "frontend-engineer",
+  "name": "前端工程师",
+  "department": "software",
+  "description": "负责 Web 前端需求实现、组件维护、联调与交付。",
+  "requiredSkills": [
+    "git-workflow",
+    "frontend-coding-standard"
+  ],
+  "optionalSkills": [],
+  "requiredRules": [
+    "engineering-rules-baseline"
+  ],
+  "optionalRules": [],
+  "extends": [],
+  "status": "active"
+}

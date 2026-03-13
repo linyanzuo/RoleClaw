@@ -1,0 +1,12 @@
+{
+  "roleId": "岗位唯一标识",
+  "name": "岗位名称",
+  "department": "所属部门",
+  "description": "一句话描述这个岗位要解决的工作问题。",
+  "requiredSkills": [],
+  "optionalSkills": [],
+  "requiredRules": [],
+  "optionalRules": [],
+  "extends": [],
+  "status": "draft"
+}
