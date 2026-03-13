@@ -7,6 +7,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'fs'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
@@ -18,6 +19,43 @@ function question(rl, promptText, defaultValue = '') {
       resolve(answer.trim() || defaultValue)
     })
   })
+}
+
+function parseConflictMode(args = []) {
+  const byFlag = args.find((a) => a.startsWith('--on-conflict='))
+  const mode = byFlag ? byFlag.split('=')[1] : 'ask'
+  if (!['ask', 'skip', 'overwrite'].includes(mode)) {
+    throw new Error("Invalid --on-conflict value. Use 'ask', 'skip', or 'overwrite'.")
+  }
+  return mode
+}
+
+async function promptConflictAction(message, conflictState) {
+  if (conflictState.mode === 'skip') return 'skip'
+  if (conflictState.mode === 'overwrite') return 'overwrite'
+
+  if (!process.stdin.isTTY) {
+    throw new Error(`${message}. Non-interactive shell cannot ask; pass --on-conflict=skip|overwrite`)
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  const answer = (await question(
+    rl,
+    `${message}\nChoose [s]kip / [o]verwrite / s! (skip all) / o! (overwrite all)`,
+    's',
+  )).toLowerCase()
+  rl.close()
+
+  if (answer === 'o!') {
+    conflictState.mode = 'overwrite'
+    return 'overwrite'
+  }
+  if (answer === 's!') {
+    conflictState.mode = 'skip'
+    return 'skip'
+  }
+  if (answer === 'o' || answer === 'overwrite') return 'overwrite'
+  return 'skip'
 }
 
 const ROOT = process.cwd()
@@ -292,10 +330,11 @@ function resolveVersion(index, name, requested, kindLabel) {
   return requested
 }
 
-async function installArtifact(baseRef, kind, name, version) {
+async function installArtifact(baseRef, kind, name, version, options = {}) {
   const kindConfig = ARTIFACT_KIND[kind]
   const installRoot = kindConfig.installDir
   const artifactDir = join(installRoot, name)
+  const conflictState = options.conflictState ?? { mode: 'ask' }
 
   process.stdout.write(`Installing ${kind} ${name}@${version} `)
 
@@ -304,13 +343,33 @@ async function installArtifact(baseRef, kind, name, version) {
     `${kindConfig.registryDir}/${name}/${version}/files.json`,
   )
 
-  // Replace existing directory to avoid stale files.
-  rmSync(artifactDir, { recursive: true, force: true })
+  if (existsSync(artifactDir) && !statSync(artifactDir).isDirectory()) {
+    const action = await promptConflictAction(
+      `[conflict] '${artifactDir}' exists and is not a directory`,
+      conflictState,
+    )
+    if (action === 'skip') {
+      console.log(' skipped')
+      return { installed: false, skipped: true }
+    }
+    rmSync(artifactDir, { recursive: true, force: true })
+  }
   mkdirSync(artifactDir, { recursive: true })
 
   for (const file of files) {
     const targetPath = join(artifactDir, file)
     mkdirSync(dirname(targetPath), { recursive: true })
+    if (existsSync(targetPath)) {
+      const action = await promptConflictAction(
+        `[conflict] '${relative(ROOT, targetPath)}' already exists`,
+        conflictState,
+      )
+      if (action === 'skip') {
+        process.stdout.write('s')
+        continue
+      }
+      rmSync(targetPath, { recursive: true, force: true })
+    }
     writeFileSync(
       targetPath,
       await readTextResource(baseRef, `${kindConfig.registryDir}/${name}/${version}/${file}`),
@@ -320,6 +379,7 @@ async function installArtifact(baseRef, kind, name, version) {
   }
 
   console.log(' ok')
+  return { installed: true, skipped: false }
 }
 
 async function resolveDesiredArtifacts(config) {
@@ -453,16 +513,10 @@ async function cmdInit(args = []) {
 
   rl.close()
 
-  if (config.role) {
-    try {
-      const roleConfig = await fetchRoleConfig(config.registry, config, config.role)
-      config.skills = { ...roleConfig.requiredSkills }
-      config.rules = { ...roleConfig.requiredRules }
-    } catch {
-      config.skills = {}
-      config.rules = {}
-    }
-  }
+  // Do not overwrite explicit project declarations during init.
+  // Role defaults are merged at runtime by resolveDesiredArtifacts().
+  config.skills ??= {}
+  config.rules ??= {}
 
   writeConfig(config)
   console.log('\ncreated .roleclaw/config.json')
@@ -483,23 +537,28 @@ async function cmdUseRole(role) {
   const roleConfig = await fetchRoleConfig(config.registry, config, role)
 
   config.role = role
-  config.skills = { ...roleConfig.requiredSkills }
-  config.rules = { ...roleConfig.requiredRules }
+  // Keep explicit project-level artifacts untouched.
+  // Role defaults are merged at runtime by resolveDesiredArtifacts().
+  config.skills ??= {}
+  config.rules ??= {}
   writeConfig(config)
 
   console.log(`ide target: ${resolveIde(config)}`)
   console.log(`role set to: ${role}`)
   console.log(`role source: ${roleConfig.source}`)
-  console.log(`default skills: ${Object.keys(config.skills).join(', ') || '(none)'}`)
-  console.log(`default rules: ${Object.keys(config.rules).join(', ') || '(none)'}`)
+  console.log(`role default skills: ${Object.keys(roleConfig.requiredSkills).join(', ') || '(none)'}`)
+  console.log(`role default rules: ${Object.keys(roleConfig.requiredRules).join(', ') || '(none)'}`)
+  console.log(`project explicit skills: ${Object.keys(config.skills).join(', ') || '(none)'}`)
+  console.log(`project explicit rules: ${Object.keys(config.rules).join(', ') || '(none)'}`)
   console.log('run `roleclaw sync` to install skills and rules')
 }
 
-async function cmdSync() {
+async function cmdSync(...args) {
   const config = readConfig()
   const { skills, rules } = await resolveDesiredArtifacts(config)
   const registry = await fetchRegistry(config.registry)
   const installPaths = getInstallPaths(config)
+  const conflictState = { mode: parseConflictMode(args) }
 
   ensureIdeDirs(installPaths)
   mkdirSync(installPaths.skillInstallDir, { recursive: true })
@@ -508,15 +567,19 @@ async function cmdSync() {
   for (const [name, requestedVersion] of Object.entries(skills)) {
     const resolvedVersion = resolveVersion(registry.packages, name, requestedVersion, 'Skill')
     ARTIFACT_KIND.skill.installDir = installPaths.skillInstallDir
-    await installArtifact(config.registry, 'skill', name, resolvedVersion)
-    config.skills[name] = resolvedVersion
+    const result = await installArtifact(config.registry, 'skill', name, resolvedVersion, { conflictState })
+    if (result.installed) {
+      config.skills[name] = resolvedVersion
+    }
   }
 
   for (const [name, requestedVersion] of Object.entries(rules)) {
     const resolvedVersion = resolveVersion(registry.rules, name, requestedVersion, 'Rule')
     ARTIFACT_KIND.rule.installDir = installPaths.ruleInstallDir
-    await installArtifact(config.registry, 'rule', name, resolvedVersion)
-    config.rules[name] = resolvedVersion
+    const result = await installArtifact(config.registry, 'rule', name, resolvedVersion, { conflictState })
+    if (result.installed) {
+      config.rules[name] = resolvedVersion
+    }
   }
 
   writeConfig(config)
@@ -536,11 +599,12 @@ async function cmdList() {
   printDeclaredAndInstalled('declared rules', rules, installPaths.ruleInstallDir, 'RULE.md')
 }
 
-async function cmdUpdate(name) {
+async function cmdUpdate(name, ...args) {
   const config = readConfig()
   const { skills, rules } = await resolveDesiredArtifacts(config)
   const registry = await fetchRegistry(config.registry)
   const installPaths = getInstallPaths(config)
+  const conflictState = { mode: parseConflictMode(args) }
 
   ensureIdeDirs(installPaths)
   mkdirSync(installPaths.skillInstallDir, { recursive: true })
@@ -556,15 +620,19 @@ async function cmdUpdate(name) {
   for (const item of skillTargets) {
     const latest = resolveVersion(registry.packages, item, 'latest', 'Skill')
     ARTIFACT_KIND.skill.installDir = installPaths.skillInstallDir
-    await installArtifact(config.registry, 'skill', item, latest)
-    config.skills[item] = latest
+    const result = await installArtifact(config.registry, 'skill', item, latest, { conflictState })
+    if (result.installed) {
+      config.skills[item] = latest
+    }
   }
 
   for (const item of ruleTargets) {
     const latest = resolveVersion(registry.rules, item, 'latest', 'Rule')
     ARTIFACT_KIND.rule.installDir = installPaths.ruleInstallDir
-    await installArtifact(config.registry, 'rule', item, latest)
-    config.rules[item] = latest
+    const result = await installArtifact(config.registry, 'rule', item, latest, { conflictState })
+    if (result.installed) {
+      config.rules[item] = latest
+    }
   }
 
   writeConfig(config)
@@ -840,9 +908,10 @@ Usage:
 Primary commands:
   init [--registry PATH]   Create .roleclaw/config.json (interactive; use ROLECLAW_REGISTRY or --registry for external registry)
   use-role <role>         Select role and write default skills/rules
-  sync                    Install declared skills and rules
+  sync [--on-conflict=..] Install declared skills and rules
   list                    List declared and installed skills/rules
-  update [name]           Update one artifact or all artifacts
+  update [name] [--on-conflict=..]
+                          Update one artifact or all artifacts
   push [name]             Push IDE edits back to local registry (local only)
   doctor                  Check config, registry, role, and local installs
 
@@ -854,6 +923,11 @@ Additional commands:
 
 Config keys:
   ide                     Target IDE runtime directory (cursor|codex)
+
+Conflict options (sync/update):
+  --on-conflict=ask       Ask per conflict (default; interactive shells only)
+  --on-conflict=skip      Skip conflicting files/directories
+  --on-conflict=overwrite Overwrite conflicting files/directories
 `
 
 const COMMANDS = {
