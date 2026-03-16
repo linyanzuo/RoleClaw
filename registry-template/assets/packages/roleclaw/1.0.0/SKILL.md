@@ -24,6 +24,11 @@ roleclaw <command> [args]
 若项目内使用脚本：`node scripts/roleclaw.mjs <command> [args]`  
 若全局安装：`roleclaw <command> [args]`
 
+### 安装 RoleClaw
+
+- **macOS/Linux**：`./scripts/install-roleclaw.sh`
+- **Windows**：`powershell -ExecutionPolicy Bypass -File scripts/install-roleclaw.ps1`（需 Node.js、PowerShell 5.1+）
+
 ## 核心命令速查
 
 | 命令 | 作用 |
