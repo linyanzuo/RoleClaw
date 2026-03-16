@@ -129,9 +129,8 @@ configure_project() {
   (
     cd "${project_dir}"
     ROLECLAW_REGISTRY="${registry_ref}" roleclaw init
-    node -e "const fs=require('fs');const p='.roleclaw/config.json';const data=JSON.parse(fs.readFileSync(p,'utf8'));data.registry=process.argv[1];data.ide=process.argv[2];fs.writeFileSync(p,JSON.stringify(data,null,2)+'\n');" "${registry_ref}" "${SELECTED_IDE}"
-    roleclaw use-role "${SELECTED_ROLE}"
-    roleclaw sync
+    node -e "const fs=require('fs');const p='.roleclaw/config.json';const data=JSON.parse(fs.readFileSync(p,'utf8'));data.registry=process.argv[1];data.ide=process.argv[2];data.role=process.argv[3];fs.writeFileSync(p,JSON.stringify(data,null,2)+'\n');" "${registry_ref}" "${SELECTED_IDE}" "${SELECTED_ROLE}"
+    roleclaw pull
     roleclaw doctor
   )
 

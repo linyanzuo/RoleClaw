@@ -326,7 +326,7 @@ roleclaw init --registry /path/to/registry-template
                            └─ 与 config.skills / config.rules 合并
                               （项目显式声明优先，岗位默认补齐）
                                     │
-                                    └─ roleclaw sync
+                                    └─ roleclaw pull
                                          ├─ 读 registry.json（packages + rules 索引）
                                          ├─ 解析版本（latest / ^major / 精确版本）
                                          ├─ 拉取 assets/packages/<skill>/<ver>/files.json
@@ -344,14 +344,10 @@ roleclaw init --registry /path/to/registry-template
 然后运行：
 
 ```bash
-roleclaw sync
+roleclaw pull
 ```
 
-或者按岗位配置：
-
-```bash
-roleclaw use-role frontend-engineer
-```
+若要切换岗位，请直接修改 `.roleclaw/config.json` 中的 `role` 字段后再次执行 `roleclaw pull`。
 
 ## IDE 编辑回写 Registry（push）
 
@@ -362,4 +358,4 @@ roleclaw push              # 回写所有已声明的 skills/rules
 roleclaw push git-workflow # 仅回写指定 artifact
 ```
 
-`push` 会将 IDE 中的修改写回 Registry 对应版本目录，并更新 `files.json`。完成后执行 `git add` 和 `git commit` 持久化变更，其他伙伴通过 `git pull` + `roleclaw sync` 即可获得更新。
+`push` 会将 IDE 中的修改写回 Registry 对应版本目录，并更新 `files.json`。完成后执行 `git add` 和 `git commit` 持久化变更，其他伙伴通过 `git pull` + `roleclaw pull` 即可获得更新。

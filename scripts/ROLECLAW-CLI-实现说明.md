@@ -4,12 +4,11 @@
 
 ## 1) 核心职责
 
-`roleclaw` 在阶段一聚焦 6 个核心命令：
+`roleclaw` 在阶段一聚焦 5 个核心命令：
 
 | 命令 | 作用 | 备注 |
 |---|---|---|
-| `use-role` | 按岗位写入默认 Skills/Rules | 优先 `config.roleProfiles`，其次 `organization/roles/<role>.json` |
-| `sync` | 把声明的 Skills/Rules 安装到目标 IDE 目录 | Cursor -> `.cursor/`，Codex -> `.codex/` |
+| `pull` | 把声明的 Skills/Rules 安装到目标 IDE 目录 | Cursor -> `.cursor/`，Codex -> `.codex/` |
 | `list` | 查看声明与安装状态 | 同时展示缺失与额外安装项 |
 | `update` | 更新到最新版本 | 支持指定单个 artifact 或全部更新 |
 | `push` | 把 IDE 中的 Skill/Rule 编辑回写到本地 Registry | **仅支持本地 Registry**，远程 URL 需直接编辑仓库并提 PR |
@@ -95,7 +94,7 @@ roleclaw push git-workflow # 仅回写指定 artifact
 2. 按 `files.json` 规范写入 Registry 对应版本目录
 3. 自动生成/更新 `files.json`（主文件 SKILL.md/RULE.md 置前）
 
-完成后提示用户执行 `git add` 和 `git commit` 以持久化变更。其他伙伴通过 `git pull` + `roleclaw sync` 即可获得更新。
+完成后提示用户执行 `git add` 和 `git commit` 以持久化变更。其他伙伴通过 `git pull` + `roleclaw pull` 即可获得更新。
 
 当 Registry 为远程 URL 时，`push` 会报错并提示直接编辑仓库、提交 PR。
 

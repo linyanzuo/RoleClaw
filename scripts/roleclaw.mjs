@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from 'fs'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
+import { fileURLToPath } from 'url'
 
 function question(rl, promptText, defaultValue = '') {
   const suffix = defaultValue ? ` [${defaultValue}]` : ''
@@ -59,6 +60,8 @@ async function promptConflictAction(message, conflictState) {
 }
 
 const ROOT = process.cwd()
+const SCRIPT_FILE = fileURLToPath(import.meta.url)
+const TOOL_ROOT = resolve(dirname(SCRIPT_FILE), '..')
 const ROLECLAW_DIR = join(ROOT, '.roleclaw')
 const CONFIG_FILE = join(ROLECLAW_DIR, 'config.json')
 
@@ -93,12 +96,26 @@ function resolveLocalBase(baseRef) {
 }
 
 function defaultRegistryRef() {
-  // Step 1/2/3 prefer local registry template for fast iteration.
-  const localRegistry = join(ROOT, 'registry-template')
-  if (existsSync(localRegistry)) {
+  // 1) Prefer project-local registry for same-repo iteration.
+  const projectLocalRegistry = join(ROOT, 'registry-template')
+  const hasProjectLocalRegistry = existsSync(projectLocalRegistry)
+  console.log(`[roleclaw][registry-check] project-local: ${projectLocalRegistry} -> ${hasProjectLocalRegistry ? 'FOUND' : 'NOT_FOUND'}`)
+  if (hasProjectLocalRegistry) {
+    console.log('[roleclaw][registry-check] selected: project-local registry')
     return './registry-template'
   }
 
+  // 2) If roleclaw is called globally, fall back to bundled registry.
+  const bundledRegistry = join(TOOL_ROOT, 'registry-template')
+  const hasBundledRegistry = existsSync(bundledRegistry)
+  console.log(`[roleclaw][registry-check] bundled: ${bundledRegistry} -> ${hasBundledRegistry ? 'FOUND' : 'NOT_FOUND'}`)
+  if (hasBundledRegistry) {
+    console.log('[roleclaw][registry-check] selected: bundled registry')
+    return bundledRegistry
+  }
+
+  // 3) Final fallback: user-provided remote registry.
+  console.log('[roleclaw][registry-check] selected: fallback remote registry')
   return 'https://raw.githubusercontent.com/YOUR_ORG/cursor-skills-registry/main'
 }
 
@@ -524,36 +541,11 @@ async function cmdInit(args = []) {
   console.log(`ide: ${config.ide}`)
   console.log(`role: ${config.role ?? '(none)'}`)
   if (config.role) {
-    console.log('run `roleclaw sync` to install skills and rules')
+    console.log('run `roleclaw pull` to install skills and rules')
   }
 }
 
-async function cmdUseRole(role) {
-  if (!role) {
-    throw new Error('Usage: roleclaw use-role <role>')
-  }
-
-  const config = readConfigOrDefault()
-  const roleConfig = await fetchRoleConfig(config.registry, config, role)
-
-  config.role = role
-  // Keep explicit project-level artifacts untouched.
-  // Role defaults are merged at runtime by resolveDesiredArtifacts().
-  config.skills ??= {}
-  config.rules ??= {}
-  writeConfig(config)
-
-  console.log(`ide target: ${resolveIde(config)}`)
-  console.log(`role set to: ${role}`)
-  console.log(`role source: ${roleConfig.source}`)
-  console.log(`role default skills: ${Object.keys(roleConfig.requiredSkills).join(', ') || '(none)'}`)
-  console.log(`role default rules: ${Object.keys(roleConfig.requiredRules).join(', ') || '(none)'}`)
-  console.log(`project explicit skills: ${Object.keys(config.skills).join(', ') || '(none)'}`)
-  console.log(`project explicit rules: ${Object.keys(config.rules).join(', ') || '(none)'}`)
-  console.log('run `roleclaw sync` to install skills and rules')
-}
-
-async function cmdSync(...args) {
+async function cmdPull(...args) {
   const config = readConfig()
   const { skills, rules } = await resolveDesiredArtifacts(config)
   const registry = await fetchRegistry(config.registry)
@@ -583,7 +575,7 @@ async function cmdSync(...args) {
   }
 
   writeConfig(config)
-  console.log('sync complete')
+  console.log('pull complete')
 }
 
 async function cmdList() {
@@ -907,8 +899,7 @@ Usage:
 
 Primary commands:
   init [--registry PATH]   Create .roleclaw/config.json (interactive; use ROLECLAW_REGISTRY or --registry for external registry)
-  use-role <role>         Select role and write default skills/rules
-  sync [--on-conflict=..] Install declared skills and rules
+  pull [--on-conflict=..] Install declared skills and rules
   list                    List declared and installed skills/rules
   update [name] [--on-conflict=..]
                           Update one artifact or all artifacts
@@ -924,7 +915,7 @@ Additional commands:
 Config keys:
   ide                     Target IDE runtime directory (cursor|codex)
 
-Conflict options (sync/update):
+Conflict options (pull/update):
   --on-conflict=ask       Ask per conflict (default; interactive shells only)
   --on-conflict=skip      Skip conflicting files/directories
   --on-conflict=overwrite Overwrite conflicting files/directories
@@ -932,8 +923,7 @@ Conflict options (sync/update):
 
 const COMMANDS = {
   init: cmdInit,
-  'use-role': cmdUseRole,
-  sync: cmdSync,
+  pull: cmdPull,
   list: cmdList,
   update: cmdUpdate,
   push: cmdPush,

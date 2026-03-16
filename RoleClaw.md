@@ -29,7 +29,7 @@ AI 工具已经普及，但企业 AI 化转型的核心矛盾从未被真正解�
 
 **RoleClaw** 是一个面向企业的 **岗位 AI 助手配置与知识沉淀平台**。
 
-它帮助企业依照组织架构，为每一个岗位构建专属的 AI 助手能力（Skills），让每位员工入职即拥有一个"懂岗位、懂公司、懂业务"的 AI 同事；同时，员工在使用过程中产生的优质经验会持续沉淀回 Skills 库，形成企业知识的正向飞轮。
+它帮助企业依照组织架构，为每一个岗位构建专属的 AI 助手能力（Skills），让每位员工入职即拥有一个"懂岗位、懂公司、懂业务"的 AI 同事；同时，员工在使用过程中产生的优质经验会持续沉淀回仓库，形成企业知识的正向飞轮。
 
 ```
 没有 RoleClaw：
@@ -113,7 +113,7 @@ Skills 不是一次性配置，而是持续演进的知识载体：
 
 ```bash
 # 新人入职，分配岗位，自动获得岗位专属 AI 能力
-roleclaw sync --role frontend-developer
+roleclaw pull
 
 # 效果：.cursor/skills/ 下自动安装该岗位所有 Skills
 # AI 助手立刻懂得：你们的代码规范、Git 流程、评审标准...
@@ -224,7 +224,7 @@ roleclaw sync --role frontend-developer
 ```
 阶段一 · MVP（当前）
   ├── 岗位 Skills/Rules 配置（.roleclaw/config.json + roles.json）
-  ├── CLI 工具（roleclaw sync / update / add-skill）
+  ├── CLI 工具（roleclaw pull / update / add-skill）
   ├── 基于 GitHub 私有仓库的 Skills 存储
   └── 兼容 AgentSkills 标准，支持 Cursor / Claude Code
 
