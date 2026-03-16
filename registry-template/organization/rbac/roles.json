@@ -5,7 +5,8 @@
       "description": "软件研发部门前端工程师",
       "skills": [
         "git-workflow",
-        "frontend-coding-standard"
+        "frontend-coding-standard",
+        "roleclaw"
       ],
       "rules": [
         "engineering-rules-baseline"
@@ -14,7 +15,8 @@
     "flutter-engineer": {
       "description": "软件研发部门 Flutter 工程师",
       "skills": [
-        "git-workflow"
+        "git-workflow",
+        "roleclaw"
       ],
       "rules": [
         "engineering-rules-baseline"
@@ -23,7 +25,8 @@
     "ui-designer": {
       "description": "软件研发部门 UI 设计师",
       "skills": [
-        "git-workflow"
+        "git-workflow",
+        "roleclaw"
       ],
       "rules": [
         "engineering-rules-baseline"
@@ -32,7 +35,8 @@
     "test-engineer": {
       "description": "软件研发部门测试工程师",
       "skills": [
-        "git-workflow"
+        "git-workflow",
+        "roleclaw"
       ],
       "rules": [
         "engineering-rules-baseline"
@@ -41,7 +45,8 @@
     "product-manager": {
       "description": "软件研发部门产品经理",
       "skills": [
-        "git-workflow"
+        "git-workflow",
+        "roleclaw"
       ],
       "rules": [
         "engineering-rules-baseline"

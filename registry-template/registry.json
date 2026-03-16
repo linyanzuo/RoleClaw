@@ -3,23 +3,56 @@
   "packages": {
     "git-workflow": {
       "latest": "1.0.0",
-      "versions": ["1.0.0"],
+      "versions": [
+        "1.0.0"
+      ],
       "description": "Git 提交规范、分支命名规范与提交前检查流程",
-      "tags": ["git", "workflow", "commit"]
+      "tags": [
+        "git",
+        "workflow",
+        "commit"
+      ]
     },
     "frontend-coding-standard": {
       "latest": "1.0.0",
-      "versions": ["1.0.0"],
+      "versions": [
+        "1.0.0"
+      ],
       "description": "前端编码规范：Vue/TypeScript 组件结构、注释规范、CSS/Tailwind 风格",
-      "tags": ["frontend", "vue", "typescript", "coding-standard"]
+      "tags": [
+        "frontend",
+        "vue",
+        "typescript",
+        "coding-standard"
+      ]
+    },
+    "roleclaw": {
+      "latest": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "description": "RoleClaw CLI 操作指南：初始化、拉取、发布、同步 Skill/Rule 到 Registry 的完整流程与命令参考",
+      "tags": [
+        "roleclaw",
+        "skill",
+        "rule",
+        "registry",
+        "cli"
+      ]
     }
   },
   "rules": {
     "engineering-rules-baseline": {
       "latest": "1.0.0",
-      "versions": ["1.0.0"],
+      "versions": [
+        "1.0.0"
+      ],
       "description": "工程协作基础规则：需求澄清、变更说明、交付自检与风险提示。",
-      "tags": ["rules", "engineering", "baseline"]
+      "tags": [
+        "rules",
+        "engineering",
+        "baseline"
+      ]
     }
   }
 }

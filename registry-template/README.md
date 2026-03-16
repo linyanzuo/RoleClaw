@@ -266,6 +266,20 @@ description: "Git 工作流规范：提交、分支、PR 与提交前检查。"
 
 ## 发布新 Skill
 
+### 方式一：从 IDE 发布（推荐）
+
+在 `.<ide>/skills/<name>/` 下新建 Skill 目录和 `SKILL.md` 后，执行：
+
+```bash
+roleclaw add-skill <name> [version] [--overwrite]
+```
+
+会自动创建版本目录、生成 `files.json`、更新 `registry.json` 并写入 `config.skills`。
+
+Rule 同理：`roleclaw add-rule <name> [version] [--overwrite]`。更新用 `update-skill` / `update-rule`，删除用 `remove-skill` / `remove-rule`。
+
+### 方式二：手动发布
+
 1. 基于 `templates/skill-template/1.0.0/` 复制一个新目录
 2. 补全 `SKILL.md` 和资源文件
 3. 更新 `files.json`

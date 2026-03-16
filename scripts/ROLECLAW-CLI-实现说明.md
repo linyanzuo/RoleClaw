@@ -12,6 +12,12 @@
 | `list` | 查看声明与安装状态 | 同时展示缺失与额外安装项 |
 | `update` | 更新到最新版本 | 支持指定单个 artifact 或全部更新 |
 | `push` | 把 IDE 中的 Skill/Rule 编辑回写到本地 Registry | **仅支持本地 Registry**，远程 URL 需直接编辑仓库并提 PR |
+| `add-skill` | 将 IDE 中新建的 Skill 添加到 Registry | 从 `.<ide>/skills/<name>/` 读取，创建版本目录并更新 registry.json |
+| `add-rule` | 将 IDE 中新建的 Rule 添加到 Registry | 从 `.<ide>/rules/<name>/` 读取，创建版本目录并更新 registry.json |
+| `remove-skill` | 从 Registry 删除 Skill | 删除 assets/packages 与 registry.json 条目 |
+| `remove-rule` | 从 Registry 删除 Rule | 删除 assets/rules 与 registry.json 条目 |
+| `update-skill` | 将 IDE 中 Skill 同步到 Registry | 等同于 `push <name>` 针对 skill |
+| `update-rule` | 将 IDE 中 Rule 同步到 Registry | 等同于 `push <name>` 针对 rule |
 | `doctor` | 做可用性自检 | 失败项返回非 0 退出码 |
 
 维护约定：
@@ -98,7 +104,60 @@ roleclaw push git-workflow # 仅回写指定 artifact
 
 当 Registry 为远程 URL 时，`push` 会报错并提示直接编辑仓库、提交 PR。
 
-## 4) doctor 的检查层次
+### add-skill / add-rule：添加新 Skill/Rule 到 Registry
+
+当在 IDE 的 `.<ide>/skills/<name>/` 或 `.<ide>/rules/<name>/` 下新建目录和主文件后，执行：
+
+```bash
+roleclaw add-skill <name> [version] [--overwrite]
+roleclaw add-rule <name> [version] [--overwrite]
+```
+
+会创建版本目录、生成 `files.json`、更新 `registry.json` 并写入 config。若目标版本已存在，需加 `--overwrite`。
+
+### remove-skill / remove-rule：从 Registry 删除
+
+```bash
+roleclaw remove-skill <name>
+roleclaw remove-rule <name>
+```
+
+会删除 `assets/packages/<name>/` 或 `assets/rules/<name>/`，并更新 `registry.json` 与 config。
+
+### update-skill / update-rule：同步 IDE 修改到 Registry
+
+```bash
+roleclaw update-skill <name> [-v]
+roleclaw update-rule <name> [-v]
+```
+
+等同于 `push <name>`，将 IDE 中的修改写回 Registry。
+
+## 4) 目录创建与冲突处理
+
+### 目录自动创建
+
+`pull` 和 `update` 执行时，若 `.cursor/` 或 `.codex/` 不存在，会自动创建：
+
+- `.<ide>/`（如 `.cursor/`、`.codex/`）
+- `.<ide>/skills/`
+- `.<ide>/rules/`
+
+`init` 仅创建 `.roleclaw/config.json`，不创建 IDE 目录；首次安装需执行 `roleclaw pull`。
+
+### 文件冲突处理
+
+当目标路径已存在（文件或非目录）时，支持：
+
+| 选项 | 说明 |
+|------|------|
+| `--on-conflict=ask` | 交互式询问（默认，仅 TTY） |
+| `--on-conflict=skip` | 跳过冲突项 |
+| `--on-conflict=overwrite` | 强制覆盖 |
+
+非交互环境（CI/管道）下若遇冲突且未指定 `--on-conflict`，会报错并提示使用 `skip` 或 `overwrite`。
+
+## 5) doctor 的检查层次
 
 `doctor` 从外到内检查三层：
 
@@ -108,7 +167,7 @@ roleclaw push git-workflow # 仅回写指定 artifact
 
 只要有失败项，命令会以非 0 退出，方便接入 CI 或脚本化验收。
 
-## 5) 维护建议
+## 6) 维护建议
 
 - 继续保持 `SKILL.md` 仅包含 AI 运行时最小信息
 - `RULE.md` 同样保持最小运行时信息，不混入治理字段

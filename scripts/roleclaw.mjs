@@ -194,7 +194,18 @@ function getInstallPaths(config) {
 }
 
 function ensureIdeDirs(paths) {
-  mkdirSync(paths.ideRootDir, { recursive: true })
+  const { ideRootDir, skillInstallDir, ruleInstallDir } = paths
+  if (existsSync(ideRootDir)) {
+    if (!statSync(ideRootDir).isDirectory()) {
+      throw new Error(
+        `'${ideRootDir}' exists but is not a directory. Remove it or use a different project.`,
+      )
+    }
+  } else {
+    mkdirSync(ideRootDir, { recursive: true })
+  }
+  mkdirSync(skillInstallDir, { recursive: true })
+  mkdirSync(ruleInstallDir, { recursive: true })
 }
 
 function writeConfig(data) {
@@ -438,6 +449,16 @@ function listInstalledDirs(baseDir) {
     .sort()
 }
 
+/** Parse name and description from SKILL.md or RULE.md frontmatter. */
+function parseArtifactFrontmatter(content) {
+  const match = content.match(/^---\s*\n([\s\S]*?)\n---/)
+  if (!match) return {}
+  const block = match[1]
+  const name = block.match(/name:\s*["']([^"']+)["']/)?.[1]
+  const description = block.match(/description:\s*["']([^"']+)["']/)?.[1]
+  return { name, description }
+}
+
 /** Recursively list all files under dir, paths relative to dir. */
 function listFilesRecursive(dir, baseDir = dir) {
   if (!existsSync(dir)) return []
@@ -553,8 +574,6 @@ async function cmdPull(...args) {
   const conflictState = { mode: parseConflictMode(args) }
 
   ensureIdeDirs(installPaths)
-  mkdirSync(installPaths.skillInstallDir, { recursive: true })
-  mkdirSync(installPaths.ruleInstallDir, { recursive: true })
 
   for (const [name, requestedVersion] of Object.entries(skills)) {
     const resolvedVersion = resolveVersion(registry.packages, name, requestedVersion, 'Skill')
@@ -599,8 +618,6 @@ async function cmdUpdate(name, ...args) {
   const conflictState = { mode: parseConflictMode(args) }
 
   ensureIdeDirs(installPaths)
-  mkdirSync(installPaths.skillInstallDir, { recursive: true })
-  mkdirSync(installPaths.ruleInstallDir, { recursive: true })
 
   const skillTargets = name ? (skills[name] ? [name] : []) : Object.keys(skills)
   const ruleTargets = name ? (rules[name] ? [name] : []) : Object.keys(rules)
@@ -668,8 +685,6 @@ async function cmdDoctor() {
   }
 
   ensureIdeDirs(installPaths)
-  mkdirSync(installPaths.skillInstallDir, { recursive: true })
-  mkdirSync(installPaths.ruleInstallDir, { recursive: true })
   console.log(`[ok] install directories are ready (${installPaths.ideRootDir})`)
 
   const { skills, rules } = await resolveDesiredArtifacts(config)
@@ -743,7 +758,6 @@ async function cmdAdd(name, version = 'latest') {
   const installPaths = getInstallPaths(config)
 
   ensureIdeDirs(installPaths)
-  mkdirSync(installPaths.skillInstallDir, { recursive: true })
   ARTIFACT_KIND.skill.installDir = installPaths.skillInstallDir
   await installArtifact(config.registry, 'skill', name, resolvedVersion)
 
@@ -777,8 +791,11 @@ async function cmdRemove(name) {
 /**
  * Push IDE-installed skills/rules back to local registry.
  * Only works when config.registry is a local path (not URL).
+ * Source: .<ide>/skills/ and .<ide>/rules/ (relative to project root where .roleclaw/config.json lives)
  */
-async function cmdPush(name) {
+async function cmdPush(...args) {
+  const filtered = args.filter((a) => !a.startsWith('-'))
+  const name = filtered[0]
   const config = readConfig()
   if (isUrl(config.registry)) {
     throw new Error(
@@ -787,9 +804,16 @@ async function cmdPush(name) {
     )
   }
 
+  const verbose = args.includes('--verbose') || args.includes('-v')
   const registryBase = resolveLocalBase(config.registry)
   const { skills, rules } = await resolveDesiredArtifacts(config)
   const installPaths = getInstallPaths(config)
+
+  if (verbose) {
+    console.log(`[push] project root: ${ROOT}`)
+    console.log(`[push] registry: ${registryBase}`)
+    console.log(`[push] source: ${installPaths.skillInstallDir} + ${installPaths.ruleInstallDir}`)
+  }
 
   const skillTargets = name ? (skills[name] ? [name] : []) : Object.keys(skills)
   const ruleTargets = name ? (rules[name] ? [name] : []) : Object.keys(rules)
@@ -827,6 +851,9 @@ async function cmdPush(name) {
     }
 
     writeFileSync(join(destDir, 'files.json'), JSON.stringify(files, null, 2) + '\n', 'utf-8')
+    if (verbose) {
+      console.log(`  ${relative(ROOT, srcDir)} -> ${relative(ROOT, destDir)}`)
+    }
     process.stdout.write(`Pushed ${kind} ${artifactName}@${version} `)
     console.log('ok')
   }
@@ -843,6 +870,186 @@ async function cmdPush(name) {
 
   console.log('push complete. Run `git add` and `git commit` in the registry to save changes.')
 }
+
+/** Add artifact (skill or rule) from IDE to Registry. */
+async function addArtifactToRegistry(kind, name, version, args) {
+  const kindConfig = ARTIFACT_KIND[kind]
+  const config = readConfig()
+  if (isUrl(config.registry)) {
+    throw new Error(`add-${kind} only works with local registry.`)
+  }
+
+  const registryBase = resolveLocalBase(config.registry)
+  const installPaths = getInstallPaths(config)
+  const srcDir =
+    kind === 'skill'
+      ? join(installPaths.skillInstallDir, name)
+      : join(installPaths.ruleInstallDir, name)
+
+  if (!existsSync(srcDir)) {
+    const dirHint =
+      kind === 'skill'
+        ? installPaths.skillInstallDir
+        : installPaths.ruleInstallDir
+    throw new Error(
+      `${kind} '${name}' not found in ${dirHint}. Create .<ide>/${kind}s/${name}/ with ${kindConfig.markerFile} first.`,
+    )
+  }
+
+  const markerPath = join(srcDir, kindConfig.markerFile)
+  if (!existsSync(markerPath)) {
+    throw new Error(`${kind} '${name}' missing ${kindConfig.markerFile}`)
+  }
+
+  const allFiles = listFilesRecursive(srcDir, srcDir)
+  if (!allFiles.includes(kindConfig.markerFile)) {
+    throw new Error(`${kind} '${name}' missing ${kindConfig.markerFile}`)
+  }
+
+  const files = [
+    kindConfig.markerFile,
+    ...allFiles.filter((f) => f !== kindConfig.markerFile),
+  ]
+  const destDir = join(
+    registryBase,
+    kindConfig.registryDir,
+    name,
+    version,
+  )
+
+  if (existsSync(destDir)) {
+    if (!args.includes('--overwrite')) {
+      throw new Error(
+        `'${name}@${version}' already exists in registry. Use --overwrite to replace.`,
+      )
+    }
+  }
+
+  mkdirSync(destDir, { recursive: true })
+  for (const file of files) {
+    const srcPath = join(srcDir, file)
+    const destPath = join(destDir, file)
+    if (existsSync(srcPath)) {
+      mkdirSync(dirname(destPath), { recursive: true })
+      writeFileSync(destPath, readFileSync(srcPath, 'utf-8'), 'utf-8')
+    }
+  }
+  writeFileSync(
+    join(destDir, 'files.json'),
+    JSON.stringify(files, null, 2) + '\n',
+    'utf-8',
+  )
+
+  const content = readFileSync(markerPath, 'utf-8')
+  const { description: fmDesc } = parseArtifactFrontmatter(content)
+  const description = fmDesc ?? `${kind}: ${name}`
+
+  const registryPath = join(registryBase, 'registry.json')
+  const registry = JSON.parse(readFileSync(registryPath, 'utf-8'))
+  const registryKey = kindConfig.registryKey
+  registry[registryKey] ??= {}
+
+  if (registry[registryKey][name]) {
+    const pkg = registry[registryKey][name]
+    if (!(pkg.versions ?? []).includes(version)) {
+      pkg.versions = [...(pkg.versions ?? []), version].sort()
+    }
+    pkg.latest = version
+    if (fmDesc) pkg.description = fmDesc
+  } else {
+    registry[registryKey][name] = {
+      latest: version,
+      versions: [version],
+      description,
+      tags: [name.replace(/-/g, ' ')],
+    }
+  }
+
+  writeFileSync(registryPath, JSON.stringify(registry, null, 2) + '\n', 'utf-8')
+
+  const configKey = kind === 'skill' ? 'skills' : 'rules'
+  config[configKey] ??= {}
+  config[configKey][name] = version
+  writeConfig(config)
+
+  console.log(`Added ${kind} ${name}@${version} to registry`)
+  console.log(`  ${relative(ROOT, srcDir)} -> ${relative(ROOT, destDir)}`)
+  console.log(`  Run \`git add\` in the registry to save.`)
+}
+
+async function cmdAddSkill(...args) {
+  const filtered = args.filter((a) => !a.startsWith('-'))
+  const name = filtered[0]
+  const version = filtered[1] ?? '1.0.0'
+  if (!name) throw new Error('Usage: roleclaw add-skill <name> [version] [--overwrite]')
+  await addArtifactToRegistry('skill', name, version, args)
+}
+
+async function cmdAddRule(...args) {
+  const filtered = args.filter((a) => !a.startsWith('-'))
+  const name = filtered[0]
+  const version = filtered[1] ?? '1.0.0'
+  if (!name) throw new Error('Usage: roleclaw add-rule <name> [version] [--overwrite]')
+  await addArtifactToRegistry('rule', name, version, args)
+}
+
+/** Remove artifact from Registry. */
+async function removeArtifactFromRegistry(kind, name) {
+  const kindConfig = ARTIFACT_KIND[kind]
+  const config = readConfig()
+  if (isUrl(config.registry)) {
+    throw new Error(`remove-${kind} only works with local registry.`)
+  }
+
+  const registryBase = resolveLocalBase(config.registry)
+  const artifactDir = join(registryBase, kindConfig.registryDir, name)
+
+  if (!existsSync(artifactDir)) {
+    throw new Error(`${kind} '${name}' not found in registry.`)
+  }
+
+  rmSync(artifactDir, { recursive: true, force: true })
+
+  const registryPath = join(registryBase, 'registry.json')
+  const registry = JSON.parse(readFileSync(registryPath, 'utf-8'))
+  const registryKey = kindConfig.registryKey
+  if (registry[registryKey]?.[name]) {
+    delete registry[registryKey][name]
+    writeFileSync(registryPath, JSON.stringify(registry, null, 2) + '\n', 'utf-8')
+  }
+
+  const configKey = kind === 'skill' ? 'skills' : 'rules'
+  if (config[configKey]?.[name]) {
+    delete config[configKey][name]
+    writeConfig(config)
+  }
+
+  console.log(`Removed ${kind} ${name} from registry`)
+}
+
+async function cmdRemoveSkill(name) {
+  if (!name) throw new Error('Usage: roleclaw remove-skill <name>')
+  await removeArtifactFromRegistry('skill', name)
+}
+
+async function cmdRemoveRule(name) {
+  if (!name) throw new Error('Usage: roleclaw remove-rule <name>')
+  await removeArtifactFromRegistry('rule', name)
+}
+
+/** Update artifact in Registry (sync from IDE). Same as push for single artifact. */
+async function cmdUpdateSkill(...args) {
+  const name = args.filter((a) => !a.startsWith('-'))[0]
+  if (!name) throw new Error('Usage: roleclaw update-skill <name> [-v]')
+  await cmdPush(name, ...args)
+}
+
+async function cmdUpdateRule(...args) {
+  const name = args.filter((a) => !a.startsWith('-'))[0]
+  if (!name) throw new Error('Usage: roleclaw update-rule <name> [-v]')
+  await cmdPush(name, ...args)
+}
+
 
 async function cmdSearch(query = '') {
   const config = readConfigOrDefault()
@@ -903,12 +1110,22 @@ Primary commands:
   list                    List declared and installed skills/rules
   update [name] [--on-conflict=..]
                           Update one artifact or all artifacts
-  push [name]             Push IDE edits back to local registry (local only)
+  push [name] [-v]         Push IDE edits back to local registry (local only; -v verbose)
   doctor                  Check config, registry, role, and local installs
 
+Registry commands (local registry only):
+  add-skill <name> [version] [--overwrite]
+                          Add skill from IDE to registry
+  add-rule <name> [version] [--overwrite]
+                          Add rule from IDE to registry
+  remove-skill <name>      Remove skill from registry
+  remove-rule <name>       Remove rule from registry
+  update-skill <name> [-v] Sync skill from IDE to registry
+  update-rule <name> [-v]  Sync rule from IDE to registry
+
 Additional commands:
-  add <skill> [version]   Add and install one skill
-  remove <name>           Remove artifact from skills/rules
+  add <skill> [version]   Add and install one skill from registry
+  remove <name>           Remove artifact from local config and IDE
   search [keyword]        Search skills and rules in registry
   help, --help, -h        Show this help
 
@@ -927,6 +1144,12 @@ const COMMANDS = {
   list: cmdList,
   update: cmdUpdate,
   push: cmdPush,
+  'add-skill': cmdAddSkill,
+  'add-rule': cmdAddRule,
+  'remove-skill': cmdRemoveSkill,
+  'remove-rule': cmdRemoveRule,
+  'update-skill': cmdUpdateSkill,
+  'update-rule': cmdUpdateRule,
   doctor: cmdDoctor,
   add: cmdAdd,
   remove: cmdRemove,

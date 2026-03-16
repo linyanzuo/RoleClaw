@@ -4,7 +4,8 @@
   "department": "software",
   "description": "负责界面设计、交互方案输出与设计协作。",
   "requiredSkills": [
-    "git-workflow"
+    "git-workflow",
+    "roleclaw"
   ],
   "optionalSkills": [],
   "requiredRules": [

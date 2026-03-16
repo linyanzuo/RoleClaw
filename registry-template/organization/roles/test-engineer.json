@@ -4,7 +4,8 @@
   "department": "software",
   "description": "负责测试设计、质量验证、缺陷跟踪与回归确认。",
   "requiredSkills": [
-    "git-workflow"
+    "git-workflow",
+    "roleclaw"
   ],
   "optionalSkills": [],
   "requiredRules": [

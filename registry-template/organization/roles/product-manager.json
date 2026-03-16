@@ -4,7 +4,8 @@
   "department": "software",
   "description": "负责需求定义、方案沟通、优先级管理与跨团队协作。",
   "requiredSkills": [
-    "git-workflow"
+    "git-workflow",
+    "roleclaw"
   ],
   "optionalSkills": [],
   "requiredRules": [
