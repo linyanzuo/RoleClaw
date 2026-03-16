@@ -27,7 +27,7 @@ roleclaw <command> [args]
 ### 安装 RoleClaw
 
 - **macOS/Linux**：`./scripts/install-roleclaw.sh`
-- **Windows**：`powershell -ExecutionPolicy Bypass -File scripts/install-roleclaw.ps1`（需 Node.js、PowerShell 5.1+）
+- **Windows**：`scripts\install-roleclaw.bat` 或 `powershell -ExecutionPolicy Bypass -File scripts\install-roleclaw.ps1`（需 Node.js、PowerShell 5.1+）
 
 ## 核心命令速查
 

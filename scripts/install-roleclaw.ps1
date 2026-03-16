@@ -2,6 +2,10 @@
 # Only installs global roleclaw command. IDE and role are selected per-project via roleclaw init.
 # Requires: Node.js, PowerShell 5.1+
 # macOS/Linux: use scripts/install-roleclaw.sh
+#
+# If "script execution disabled" error, use:
+#   scripts\install-roleclaw.bat
+# or: powershell -ExecutionPolicy Bypass -File scripts\install-roleclaw.ps1
 
 $ErrorActionPreference = "Stop"
 
