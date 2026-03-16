@@ -5,7 +5,8 @@
   "description": "负责 Flutter 客户端功能开发、跨端调试与发布协作。",
   "requiredSkills": [
     "git-workflow",
-    "roleclaw"
+    "roleclaw",
+    "cloud-pet-flutter-module"
   ],
   "optionalSkills": [],
   "requiredRules": [
