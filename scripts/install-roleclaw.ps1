@@ -28,16 +28,16 @@ function Install-GlobalCommand {
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if ($userPath -notlike "*$binDir*") {
         [Environment]::SetEnvironmentVariable("Path", "$userPath;$binDir", "User")
-        Write-Host ""
-        Write-Host "[WARN] Added $binDir to user PATH. You may need to reopen the terminal."
     }
 
+    # Refresh current session PATH so roleclaw is available immediately (PowerShell does not auto-reload)
+    $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
     Write-Host "Installed roleclaw to $batPath"
 }
 
 function Print-NextSteps {
     Write-Host ""
-    Write-Host "Installation complete."
+    Write-Host "Installation complete. PATH refreshed for current session."
     Write-Host ""
     Write-Host "Next steps (per project):"
     Write-Host "  cd C:\path\to\your\project"
