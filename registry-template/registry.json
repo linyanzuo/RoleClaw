@@ -39,6 +39,16 @@
         "registry",
         "cli"
       ]
+    },
+    "cloud-pet-flutter-module": {
+      "latest": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "description": "skill: cloud-pet-flutter-module",
+      "tags": [
+        "cloud pet flutter module"
+      ]
     }
   },
   "rules": {
