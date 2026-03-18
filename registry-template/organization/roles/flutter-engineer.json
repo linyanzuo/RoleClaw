@@ -6,7 +6,9 @@
   "requiredSkills": [
     "git-workflow",
     "roleclaw",
-    "cloud-pet-flutter-module"
+    "cloud-pet-flutter-module",
+    "cp-app-theme-system",
+    "cp-component-system"
   ],
   "optionalSkills": [],
   "requiredRules": [
