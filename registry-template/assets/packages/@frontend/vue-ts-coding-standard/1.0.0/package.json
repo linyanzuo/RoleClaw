@@ -1,0 +1,6 @@
+{
+  "name": "@frontend/vue-ts-coding-standard",
+  "version": "1.0.0",
+  "description": "Vue 3 + TypeScript 编码规范：组件结构、命名、类型、注释与代码风格",
+  "aipm": { "type": "skill" }
+}

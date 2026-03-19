@@ -1,0 +1,6 @@
+{
+  "name": "@frontend/eng-rules-baseline",
+  "version": "1.0.0",
+  "description": "前端工程通用规范基线：错误处理、依赖管理、安全与可维护性",
+  "aipm": { "type": "rule" }
+}

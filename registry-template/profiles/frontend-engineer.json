@@ -1,0 +1,13 @@
+{
+  "profile": "frontend-engineer",
+  "name": "前端工程师",
+  "description": "负责 Web 前端业务功能开发、代码实现与技术交付",
+  "skills": {
+    "@frontend/vue-ts-coding-standard": "1.0.0",
+    "@frontend/git-workflow": "1.0.0",
+    "@frontend/code-review-guide": "1.0.0"
+  },
+  "rules": {
+    "@frontend/eng-rules-baseline": "1.0.0"
+  }
+}

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://roleclaw.dev/schemas/registry.schema.json",
-  "title": "RoleClaw Registry Index",
+  "$id": "https://aipm.dev/schemas/registry.schema.json",
+  "title": "AIPM Registry Index",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "packages", "rules"],
@@ -13,7 +13,7 @@
     "packages": {
       "type": "object",
       "propertyNames": {
-        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        "pattern": "^(?:shared|[a-z0-9]+(?:-[a-z0-9]+)*)\\/[a-z0-9]+(?:-[a-z0-9]+)*$"
       },
       "additionalProperties": {
         "type": "object",
@@ -51,7 +51,7 @@
     "rules": {
       "type": "object",
       "propertyNames": {
-        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        "pattern": "^(?:shared|[a-z0-9]+(?:-[a-z0-9]+)*)\\/[a-z0-9]+(?:-[a-z0-9]+)*$"
       },
       "additionalProperties": {
         "type": "object",

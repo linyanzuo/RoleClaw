@@ -1,0 +1,6 @@
+{
+  "name": "@frontend/code-review-guide",
+  "version": "1.0.0",
+  "description": "代码审查规范：正确性、安全、可维护性与 Vue/TS 最佳实践",
+  "aipm": { "type": "skill" }
+}

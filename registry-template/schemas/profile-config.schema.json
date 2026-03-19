@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aipm.dev/schemas/profile-config.schema.json",
+  "title": "AIPM 配置单",
+  "description": "配置单格式，定义该配置对应的 Skills/Rules 组合",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["skills", "rules"],
+  "properties": {
+    "profile": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "description": "配置单 ID，与文件名一致"
+    },
+    "name": {
+      "type": "string",
+      "description": "显示名称（供上层使用）"
+    },
+    "skills": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "该配置的 Skills 及版本"
+    },
+    "rules": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "该配置的 Rules 及版本"
+    }
+  }
+}

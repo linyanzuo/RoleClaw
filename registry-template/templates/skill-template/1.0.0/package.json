@@ -1,0 +1,6 @@
+{
+  "name": "replace-with-skill-name",
+  "version": "1.0.0",
+  "description": "Replace with skill description",
+  "aipm": { "type": "skill" }
+}

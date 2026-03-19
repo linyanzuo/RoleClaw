@@ -4,7 +4,10 @@
 # Local runtime/output directories
 .cursor/
 .codex/
-.roleclaw/
+.aipm/
 
 # Dependency directories
 node_modules/
+
+# Temp / check directories
+tmp-codex-check/

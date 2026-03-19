@@ -1,88 +1,57 @@
 {
   "version": "1",
   "packages": {
-    "git-workflow": {
+    "aipm": {
       "latest": "1.0.0",
       "versions": [
         "1.0.0"
       ],
-      "description": "Git 提交规范、分支命名规范与提交前检查流程",
+      "description": "AIPM CLI 操作指南：初始化、拉取、发布、同步 Skill/Rule 到 Registry 的完整流程与命令参考",
       "tags": [
-        "git",
-        "workflow",
-        "commit"
-      ]
-    },
-    "frontend-coding-standard": {
-      "latest": "1.0.0",
-      "versions": [
-        "1.0.0"
-      ],
-      "description": "前端编码规范：Vue/TypeScript 组件结构、注释规范、CSS/Tailwind 风格",
-      "tags": [
-        "frontend",
-        "vue",
-        "typescript",
-        "coding-standard"
-      ]
-    },
-    "roleclaw": {
-      "latest": "1.0.0",
-      "versions": [
-        "1.0.0"
-      ],
-      "description": "RoleClaw CLI 操作指南：初始化、拉取、发布、同步 Skill/Rule 到 Registry 的完整流程与命令参考",
-      "tags": [
-        "roleclaw",
+        "aipm",
         "skill",
         "rule",
         "registry",
         "cli"
       ]
     },
-    "cloud-pet-flutter-module": {
+    "@frontend/vue-ts-coding-standard": {
       "latest": "1.0.0",
-      "versions": [
-        "1.0.0"
-      ],
-      "description": "skill: cloud-pet-flutter-module",
-      "tags": [
-        "cloud pet flutter module"
-      ]
+      "versions": ["1.0.0"],
+      "description": "Vue 3 + TypeScript 编码规范：组件结构、命名、类型、注释与代码风格",
+      "tags": ["vue", "typescript", "frontend", "coding-standard"]
+    },
+    "@frontend/git-workflow": {
+      "latest": "1.0.0",
+      "versions": ["1.0.0"],
+      "description": "Git 工作流规范：提交信息、分支命名、PR 流程与提交流程",
+      "tags": ["git", "workflow", "commit", "pr"]
+    },
+    "@frontend/code-review-guide": {
+      "latest": "1.0.0",
+      "versions": ["1.0.0"],
+      "description": "代码审查规范：正确性、安全、可维护性与 Vue/TS 最佳实践",
+      "tags": ["code-review", "quality", "vue", "typescript"]
     },
     "cp-app-theme-system": {
       "latest": "1.0.0",
-      "versions": [
-        "1.0.0"
-      ],
+      "versions": ["1.0.0"],
       "description": "维护并扩展此仓库中的 CP Flutter 主题系统。当 Codex 需要新增或重命名主题 token、添加或更新主题方案、使主题字段与仓库根目录中的本地 Figma HTML 视觉规范保持一致、更新 `CPAppThemeController` 或 `CPAppThemeText`、调整主题工作台演示页，或修复与主题相关的测试和集成代码时使用。",
-      "tags": [
-        "cp app theme system"
-      ]
+      "tags": ["cp app theme system"]
     },
     "cp-component-system": {
       "latest": "1.0.0",
-      "versions": [
-        "1.0.0"
-      ],
+      "versions": ["1.0.0"],
       "description": "维护并扩展当前仓库中的 CP Flutter 组件体系。适用于修改 `lib/theme/widgets/` 下的组件、对齐本地 Figma HTML 视觉规范、补充组件状态和动效、扩展可配置 API，或更新组件测试。当前基线组件为 `CPThemeButton`。",
-      "tags": [
-        "cp component system"
-      ]
+      "tags": ["cp component system"]
     }
   },
   "rules": {
-    "engineering-rules-baseline": {
+    "@frontend/eng-rules-baseline": {
       "latest": "1.0.0",
-      "versions": [
-        "1.0.0"
-      ],
-      "description": "工程协作基础规则：需求澄清、变更说明、交付自检与风险提示。",
-      "tags": [
-        "rules",
-        "engineering",
-        "baseline"
-      ]
+      "versions": ["1.0.0"],
+      "description": "前端工程通用规范基线：错误处理、依赖管理、安全与可维护性",
+      "tags": ["engineering", "baseline", "frontend"]
     }
   }
 }
