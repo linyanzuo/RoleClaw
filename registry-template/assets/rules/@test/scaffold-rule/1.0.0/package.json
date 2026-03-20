@@ -1,0 +1,8 @@
+{
+  "name": "@test/scaffold-rule",
+  "version": "1.0.0",
+  "description": "rule: scaffold-rule",
+  "aipm": {
+    "type": "rule"
+  }
+}

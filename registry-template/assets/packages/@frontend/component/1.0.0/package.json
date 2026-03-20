@@ -1,0 +1,8 @@
+{
+  "name": "@frontend/component",
+  "version": "1.0.0",
+  "description": "skill: component",
+  "aipm": {
+    "type": "skill"
+  }
+}
