@@ -41,13 +41,13 @@ aipm 支持通过 URL 拉取 registry，成员无需拉取主仓代码。
    - GitHub: `https://raw.githubusercontent.com/<org>/<repo>/<branch>/`
    - GitLab: `https://gitlab.com/<org>/<repo>/-/raw/<branch>/`
    - 自建静态服务或 OSS 根路径
-2. 在 `aipm init` 时，若选择远程 registry，写入上述 URL 到 `.aipm/config.json`。
+2. 在 `aipm init` 时，若选择远程 registry，写入上述 URL 到 `aipm_profile.json`。
 3. 更新 `scripts/install-aipm.sh` 及文档，说明 `AIPM_REGISTRY` 环境变量用法。
 4. 验证：配置远程 URL 后执行 `aipm install`，能正确拉取 packages。
 
 #### 完成标准
 
-- `.aipm/config.json` 中 `registry` 可为 `https://...` URL
+- `aipm_profile.json` 中 `registry` 可为 `https://...` URL
 - `aipm install` 能从远程 URL 成功安装
 
 ---

@@ -98,7 +98,8 @@ const ROOT = process.cwd()
 const SCRIPT_FILE = fileURLToPath(import.meta.url)
 const TOOL_ROOT = resolve(dirname(SCRIPT_FILE), '..')
 const AIPM_DIR = join(ROOT, '.aipm')
-const CONFIG_FILE = join(AIPM_DIR, 'config.json')
+const PROFILE_CONFIG_FILE = join(ROOT, 'aipm_profile.json')
+const LEGACY_CONFIG_FILE = join(AIPM_DIR, 'config.json')
 const PACKAGE_JSON = join(ROOT, 'package.json')
 
 const IDE_DIR_MAP = {
@@ -174,8 +175,10 @@ function defaultConfig() {
   }
 }
 
-function ensureAipmDir() {
-  mkdirSync(AIPM_DIR, { recursive: true })
+function getConfigFilePath() {
+  if (existsSync(PROFILE_CONFIG_FILE)) return PROFILE_CONFIG_FILE
+  if (existsSync(LEGACY_CONFIG_FILE)) return LEGACY_CONFIG_FILE
+  return PROFILE_CONFIG_FILE
 }
 
 function resolveIde(config) {
@@ -213,11 +216,13 @@ function ensureIdeDirs(paths) {
 }
 
 function writeConfig(data) {
-  ensureAipmDir()
-  writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 2) + '\n', 'utf-8')
+  writeFileSync(PROFILE_CONFIG_FILE, JSON.stringify(data, null, 2) + '\n', 'utf-8')
+  if (existsSync(LEGACY_CONFIG_FILE)) {
+    rmSync(LEGACY_CONFIG_FILE, { force: true })
+  }
 }
 
-/** Read config from package.json aipm or .aipm/config.json (npm-style). */
+/** Read config from package.json aipm or aipm_profile.json (project root). Legacy: .aipm/config.json */
 function readConfig() {
   if (existsSync(PACKAGE_JSON)) {
     try {
@@ -227,8 +232,9 @@ function readConfig() {
       }
     } catch {}
   }
-  if (existsSync(CONFIG_FILE)) {
-    return mergeConfig(defaultConfig(), JSON.parse(readFileSync(CONFIG_FILE, 'utf-8')))
+  const configPath = getConfigFilePath()
+  if (existsSync(configPath)) {
+    return mergeConfig(defaultConfig(), JSON.parse(readFileSync(configPath, 'utf-8')))
   }
   throw new Error('aipm config not found. Add "aipm" to package.json or run: aipm init')
 }
@@ -242,8 +248,9 @@ function readConfigOrDefault() {
       }
     } catch {}
   }
-  if (existsSync(CONFIG_FILE)) {
-    return mergeConfig(defaultConfig(), JSON.parse(readFileSync(CONFIG_FILE, 'utf-8')))
+  const configPath = getConfigFilePath()
+  if (existsSync(configPath)) {
+    return mergeConfig(defaultConfig(), JSON.parse(readFileSync(configPath, 'utf-8')))
   }
   return defaultConfig()
 }
@@ -684,7 +691,7 @@ async function cmdInit(args = []) {
         return false
       }
     })()
-  if (hasPkgAipm || existsSync(CONFIG_FILE)) {
+  if (hasPkgAipm || existsSync(PROFILE_CONFIG_FILE) || existsSync(LEGACY_CONFIG_FILE)) {
     console.log('aipm config already exists, skip')
     return
   }
@@ -730,7 +737,7 @@ async function cmdInit(args = []) {
   config.rules ??= {}
 
   writeConfig(config)
-  console.log('\ncreated .aipm/config.json')
+  console.log('\ncreated aipm_profile.json')
   console.log(`registry: ${config.registry}`)
   console.log(`ide: ${config.ide}`)
   if (config.profile) {
@@ -907,10 +914,10 @@ async function cmdDoctor() {
         return false
       }
     })()
-  const hasAipmConfig = existsSync(CONFIG_FILE)
+  const hasAipmConfig = existsSync(PROFILE_CONFIG_FILE) || existsSync(LEGACY_CONFIG_FILE)
 
   if (!hasPkgAipm && !hasAipmConfig) {
-    console.log('[fail] aipm config not found (package.json aipm or .aipm/config.json)')
+    console.log('[fail] aipm config not found (package.json aipm or aipm_profile.json)')
     console.log('run `aipm init` first')
     process.exitCode = 1
     return
@@ -1032,7 +1039,6 @@ async function cmdUse(profileId) {
     throw new Error(`Profile '${profileId}' not found. Check registry has profiles/${profileId}.json`)
   }
 
-  ensureAipmDir()
   config.profile = profileId
   config.skills = {}
   config.rules = {}
@@ -1186,7 +1192,7 @@ async function cmdUninstallRule(name) {
 /**
  * Push IDE-installed skills/rules back to local registry.
  * Only works when config.registry is a local path (not URL).
- * Source: .<ide>/skills/ and .<ide>/rules/ (relative to workspace root where .aipm/config.json lives)
+ * Source: .<ide>/skills/ and .<ide>/rules/ (relative to workspace root where aipm_profile.json lives)
  */
 async function cmdPush(...args) {
   const filtered = args.filter((a) => !a.startsWith('-'))
@@ -1697,7 +1703,7 @@ Usage:
   aipm <command> [args]
 
 Primary commands:
-  init [--registry PATH]   Create .aipm/config.json (interactive)
+  init [--registry PATH]   Create aipm_profile.json in project root (interactive)
   install [--on-conflict=..]
                           Install declared skills/rules from Registry to IDE (reads profile)
   list                    List declared and installed skills/rules
@@ -1723,7 +1729,7 @@ Additional commands:
   search [keyword]        Search skills and rules in registry
   help, --help, -h        Show this help
 
-Config keys:
+Config keys (aipm_profile.json in project root):
   profile                 Current profile (loads skills/rules from profiles/<profile>.json)
   skills, rules           Dependencies (npm-style: name -> version). Override profile.
   ide                     Target IDE runtime directory (cursor|codex)

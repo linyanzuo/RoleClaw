@@ -235,7 +235,7 @@ RoleClaw 项目已拆分为两层：
 
 ```
 阶段一 · MVP（当前）
-  ├── 岗位 Skills/Rules 配置（.aipm/config.json + roles.json）
+  ├── 岗位 Skills/Rules 配置（aipm_profile.json + roles.json）
   ├── CLI 工具（aipm install / update / init-skill）
   ├── 基于 GitHub 私有仓库的 Skills 存储
   └── 兼容 AgentSkills 标准，支持 Cursor / Claude Code

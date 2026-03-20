@@ -45,9 +45,9 @@ function defaultRegistryRef() {
 
 ### 配置与配置单读取策略
 
-配置入口统一为 `.aipm/config.json`，配置单来源优先级如下：
+配置入口统一为项目根目录的 `aipm_profile.json`，配置单来源优先级如下：
 
-1. `.aipm/config.json` 的 `profiles[profileId]`
+1. `aipm_profile.json` 的 `profiles[profileId]`
 2. `registry-template/organization/profiles/<profileId>.json`
 3. `registry-template/organization/rbac/roles.json`（兼容）
 
@@ -169,7 +169,7 @@ aipm unpublish-rule <name>
 - `.<ide>/skills/`
 - `.<ide>/rules/`
 
-`init` 仅创建 `.aipm/config.json`，不创建 IDE 目录；首次安装需执行 `aipm install`。
+`init` 仅创建 `aipm_profile.json`，不创建 IDE 目录；首次安装需执行 `aipm install`。
 
 ### 文件冲突处理
 
@@ -187,7 +187,7 @@ aipm unpublish-rule <name>
 
 `doctor` 从外到内检查三层：
 
-1. 配置层：`.aipm/config.json` / registry / profile 是否可读
+1. 配置层：`aipm_profile.json` / registry / profile 是否可读
 2. 索引层：registry 中是否存在目标 skill/rule 版本
 3. 本地层：`.<ide>/skills/<name>/SKILL.md` 与 `.<ide>/rules/<name>/RULE.md` 是否存在
 

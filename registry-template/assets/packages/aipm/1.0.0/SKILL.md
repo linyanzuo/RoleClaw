@@ -14,7 +14,7 @@ description: "AIPM CLI 操作指南：package 创建与发布、按 profile 管�
 
 - 用户提到 aipm、skill、rule、registry
 - 需要初始化项目、安装/同步 skills、发布新 skill、更新 registry
-- 需要查看或修改 `.aipm/config.json`、`.cursor/skills`、`.codex/rules` 等
+- 需要查看或修改 `aipm_profile.json`、`.cursor/skills`、`.codex/rules` 等
 
 ## 命令入口
 
@@ -138,7 +138,7 @@ aipm unpublish-rule <name>
 - **Skill 安装路径**：`.<ide>/skills/<name>/` 或 `.<ide>/skills/@scope/<name>/`
 - **Rule 安装路径**：`.<ide>/rules/<name>/` 或 `.<ide>/rules/@scope/<name>/`
 - **版本标记**：每个已安装 artifact 目录下有 `.aipm`（JSON `{"version":"x.y.z"}`），用于 install 时版本感知跳过；AI 工具不扫描此文件，不修改 SKILL/RULE 本身
-- **配置入口**：`package.json` 的 `aipm` 字段或 `.aipm/config.json`
+- **配置入口**：`package.json` 的 `aipm` 字段或项目根目录的 `aipm_profile.json`
 - **配置单模式**：设置 `profile` 时，从 `profiles/<profile>.json` 加载配置单；显式 `skills/rules` 可覆盖
 - **Registry**：`config.registry` 可为本地路径或远程 URL；`publish`、`init-skill` 等仅支持本地
 
@@ -161,6 +161,6 @@ aipm unpublish-rule <name>
 
 ## 执行原则
 
-1. 在**项目根目录**执行，确保 `.aipm/config.json` 存在
+1. 在**项目根目录**执行，确保 `aipm_profile.json` 存在
 2. 涉及 Registry 写入时，确认 `config.registry` 为本地路径
 3. 执行后提示用户：`git add` 与 `git commit` 以持久化 Registry 变更

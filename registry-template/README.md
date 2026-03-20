@@ -7,7 +7,7 @@ AIPM 私有 Skills 仓库模板，**完全参照 npm 包管理模型**。
 1. **唯一标识**：包名全局唯一，`git-workflow` 或 `@scope/git-workflow`（多租户）
 2. **无 shared/ 区分**：所有包平铺，通过命名区分
 3. **多租户**：`@租户名/包名` 格式，每个岗位对应一个租户，如 `@frontend/vue-ts-coding-standard`（scope ≤16 字符）
-4. **配置**：支持 `package.json` 的 `aipm` 字段或 `.aipm/config.json`，结构类似 `dependencies`
+4. **配置**：支持 `package.json` 的 `aipm` 字段或项目根目录的 `aipm_profile.json`，结构类似 `dependencies`
 
 ## 目录结构
 
@@ -121,7 +121,7 @@ registry-template/
 }
 ```
 
-### 方式二：.aipm/config.json
+### 方式二：aipm_profile.json（项目根目录）
 
 ```json
 {
