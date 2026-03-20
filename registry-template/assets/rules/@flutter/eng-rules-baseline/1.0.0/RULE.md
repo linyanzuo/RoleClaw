@@ -1,5 +1,5 @@
 ---
-name: eng-rules-baseline
+name: "@flutter/eng-rules-baseline"
 description: Flutter 工程通用规范基线：错误处理、依赖管理、可维护性
 globs: "**/*.dart"
 alwaysApply: false

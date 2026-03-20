@@ -1,0 +1,8 @@
+{
+  "name": "@flutter/theme",
+  "version": "1.0.0",
+  "description": "维护并扩展此仓库中的 CP Flutter 主题系统。",
+  "aipm": {
+    "type": "skill"
+  }
+}

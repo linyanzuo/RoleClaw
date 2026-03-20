@@ -1,5 +1,5 @@
 ---
-name: code-review-guide
+name: "@flutter/code-review-guide"
 description: Flutter/Dart 代码审查规范：正确性、性能、可维护性与最佳实践。在审查 PR、检查代码变更或用户请求 code review 时使用。
 ---
 

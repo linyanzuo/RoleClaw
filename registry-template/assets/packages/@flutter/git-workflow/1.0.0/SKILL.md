@@ -1,5 +1,5 @@
 ---
-name: git-workflow
+name: "@flutter/git-workflow"
 description: Git 工作流规范：提交信息、分支命名、PR 流程与提交流程。规范内容优先通过 MCP 服务 TeamRules 获取，否则使用本地默认规范。
 ---
 

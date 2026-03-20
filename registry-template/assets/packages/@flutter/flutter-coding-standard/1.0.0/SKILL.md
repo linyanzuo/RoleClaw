@@ -1,5 +1,5 @@
 ---
-name: flutter-coding-standard
+name: "@flutter/flutter-coding-standard"
 description: Flutter + Dart 编码规范：组件结构、命名、状态管理、注释与代码风格。在编写、审查或重构 Flutter/Dart 代码时使用。
 ---
 

@@ -237,6 +237,26 @@
       "tags": [
         "component"
       ]
+    },
+    "@flutter/theme": {
+      "latest": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "description": "维护并扩展此仓库中的 CP Flutter 主题系统。当 Codex 需要新增或重命名主题 token、添加或更新主题方案、使主题字段与仓库根目录中的本地 Figma HTML 视觉规范保持一致、更新 `CPAppThemeController` 或 `CPAppThemeText`、调整主题工作台演示页，或修复与主题相关的测试和集成代码时使用。",
+      "tags": [
+        "theme"
+      ]
+    },
+    "@flutter/component": {
+      "latest": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "description": "维护并扩展当前仓库中的 CP Flutter 组件体系。适用于修改 `lib/widgets/` 下的组件、对齐本地 Figma HTML 视觉规范、补充组件状态和动效、扩展可配置 API，或更新组件测试。当前基线组件为 `CPThemeButton`。",
+      "tags": [
+        "component"
+      ]
     }
   },
   "rules": {

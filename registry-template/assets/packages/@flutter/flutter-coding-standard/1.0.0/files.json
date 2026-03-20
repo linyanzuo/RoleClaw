@@ -1,1 +1,5 @@
-["package.json", "SKILL.md", ".aipm"]
+[
+  "SKILL.md",
+  ".aipm",
+  "package.json"
+]
