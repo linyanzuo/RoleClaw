@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aipm.dev/schemas/aipm-marker.schema.json",
   "title": "AIPM Version Marker",
-  "description": "版本标记文件 .aipm 的格式约束。由 aipm pull 在安装目录下自动写入，AI 工具不扫描此文件。",
+  "description": "版本标记文件 .aipm 的格式约束。由 aipm install 在安装目录下自动写入，AI 工具不扫描此文件。",
   "type": "object",
   "additionalProperties": false,
   "required": ["version"],
@@ -14,7 +14,7 @@
     },
     "registryPath": {
       "type": "string",
-      "description": "Registry 路径，用于 push/add 时回写。如 @scope/name 或 name"
+      "description": "Registry 路径，用于 publish 时回写。如 @scope/name 或 name"
     },
     "installedAt": {
       "type": "string",

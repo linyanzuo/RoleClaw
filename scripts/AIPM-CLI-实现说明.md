@@ -4,20 +4,25 @@
 
 ## 1) 核心职责
 
-`aipm` 在阶段一聚焦 5 个核心命令：
+`aipm` 有两个核心作用：
+
+1. **Package 生命周期**：创建 package（init-skill/init-rule）、发布至 Registry（publish）
+2. **IDE 管理**：根据 profile 配置，确保 IDE 内安装的 package 与声明版本一致
 
 | 命令 | 作用 | 备注 |
 |---|---|---|
-| `pull` | 把声明的 Skills/Rules 安装到目标 IDE 目录 | Cursor -> `.cursor/`，Codex -> `.codex/` |
+| `install` | 按 profile 把声明的 Skills/Rules 安装到目标 IDE 目录 | Cursor -> `.cursor/`，Codex -> `.codex/` |
 | `list` | 查看声明与安装状态 | 同时展示缺失与额外安装项 |
 | `update` | 更新到最新版本 | 支持指定单个 artifact 或全部更新 |
-| `push` | 把 IDE 中的 Skill/Rule 编辑回写到本地 Registry | **仅支持本地 Registry**，远程 URL 需直接编辑仓库并提 PR |
-| `add-skill` | 将 IDE 中新建的 Skill 添加到 Registry | 从 `.<ide>/skills/<name>/` 读取，创建版本目录并更新 registry.json |
-| `add-rule` | 将 IDE 中新建的 Rule 添加到 Registry | 从 `.<ide>/rules/<name>/` 读取，创建版本目录并更新 registry.json |
-| `remove-skill` | 从 Registry 删除 Skill | 删除 assets/packages 与 registry.json 条目 |
-| `remove-rule` | 从 Registry 删除 Rule | 删除 assets/rules 与 registry.json 条目 |
-| `update-skill` | 将 IDE 中 Skill 同步到 Registry | 等同于 `push <name>` 针对 skill |
-| `update-rule` | 将 IDE 中 Rule 同步到 Registry | 等同于 `push <name>` 针对 rule |
+| `publish` | 把 IDE 中的 Skill/Rule 编辑回写到本地 Registry | **仅支持本地 Registry**，远程 URL 需直接编辑仓库并提 PR |
+| `init-skill` | 交互式创建新 Skill | 提示 name、description、version，生成 package.json、.aipm、SKILL.md |
+| `init-rule` | 交互式创建新 Rule | 同上 |
+| `install-skill <name> [version]` | 添加 skill 到 config 并从 Registry 安装 | |
+| `install-rule <name> [version]` | 添加 rule 到 config 并从 Registry 安装 | |
+| `uninstall-skill <name>` | 从 config 和 IDE 移除 skill | |
+| `uninstall-rule <name>` | 从 config 和 IDE 移除 rule | |
+| `unpublish-skill <name>` | 从 Registry 删除 Skill | 删除 assets/packages 与 registry.json 条目 |
+| `unpublish-rule <name>` | 从 Registry 删除 Rule | 删除 assets/rules 与 registry.json 条目 |
 | `doctor` | 做可用性自检 | 失败项返回非 0 退出码 |
 
 维护约定：
@@ -99,65 +104,72 @@ for (const [name, version] of Object.entries(profileConfig.requiredRules)) {
 }
 ```
 
-## 3) push：IDE 编辑回写 Registry
+## 3) publish：IDE 编辑回写 Registry
 
 当 Registry 为**本地路径**（如 `./registry-template` 或项目内绝对路径）时，用户可在 IDE 中直接编辑 `.cursor/skills/<name>/` 或 `.cursor/rules/<name>/`，然后执行：
 
 ```bash
-aipm push              # 回写所有已声明的 skills/rules
-aipm push git-workflow # 仅回写指定 artifact
+aipm publish              # 回写所有已声明的 skills/rules
+aipm publish git-workflow # 仅回写指定 artifact
 ```
 
-`push` 会：
+`publish` 会：
 
 1. 从 IDE 安装目录读取文件
 2. 按 `files.json` 规范写入 Registry 对应版本目录
 3. 自动生成/更新 `files.json`（主文件 SKILL.md/RULE.md 置前）
 
-完成后提示用户执行 `git add` 和 `git commit` 以持久化变更。其他伙伴通过 `git pull` + `aipm pull` 即可获得更新。
+完成后提示用户执行 `git add` 和 `git commit` 以持久化变更。其他伙伴通过 `git pull` + `aipm install` 即可获得更新。
 
-当 Registry 为远程 URL 时，`push` 会报错并提示直接编辑仓库、提交 PR。
+当 Registry 为远程 URL 时，`publish` 会报错并提示直接编辑仓库、提交 PR。
 
-### add-skill / add-rule：添加新 Skill/Rule 到 Registry
+### init-skill / init-rule：创建新 Skill/Rule
 
-当在 IDE 的 `.<ide>/skills/<name>/` 或 `.<ide>/rules/<name>/` 下新建目录和主文件后，执行：
+交互式创建新 package，提示输入 name、description、version：
 
 ```bash
-aipm add-skill <name> [version] [--overwrite]
-aipm add-rule <name> [version] [--overwrite]
+aipm init-skill   # 创建 skill，自动生成 package.json、.aipm、SKILL.md
+aipm init-rule    # 创建 rule
 ```
 
-会创建版本目录、生成 `files.json`、更新 `registry.json` 并写入 config。若目标版本已存在，需加 `--overwrite`。
+创建后编辑 SKILL.md/RULE.md，再执行 `aipm publish <name>` 发布到 Registry。
 
-### remove-skill / remove-rule：从 Registry 删除
+### install-skill / install-rule：添加 package 并安装
 
 ```bash
-aipm remove-skill <name>
-aipm remove-rule <name>
+aipm install-skill <name> [version]   # 添加 skill 到 config 并从 Registry 安装
+aipm install-rule <name> [version]   # 添加 rule 到 config 并从 Registry 安装
+```
+
+### uninstall-skill / uninstall-rule：从 config 和 IDE 移除
+
+```bash
+aipm uninstall-skill <name>
+aipm uninstall-rule <name>
+```
+
+会删除 IDE 目录并更新 config。
+
+### unpublish-skill / unpublish-rule：从 Registry 删除
+
+```bash
+aipm unpublish-skill <name>
+aipm unpublish-rule <name>
 ```
 
 会删除 `assets/packages/<name>/` 或 `assets/rules/<name>/`，并更新 `registry.json` 与 config。
-
-### update-skill / update-rule：同步 IDE 修改到 Registry
-
-```bash
-aipm update-skill <name> [-v]
-aipm update-rule <name> [-v]
-```
-
-等同于 `push <name>`，将 IDE 中的修改写回 Registry。
 
 ## 4) 目录创建与冲突处理
 
 ### 目录自动创建
 
-`pull` 和 `update` 执行时，若 `.cursor/` 或 `.codex/` 不存在，会自动创建：
+`install` 和 `update` 执行时，若 `.cursor/` 或 `.codex/` 不存在，会自动创建：
 
 - `.<ide>/`（如 `.cursor/`、`.codex/`）
 - `.<ide>/skills/`
 - `.<ide>/rules/`
 
-`init` 仅创建 `.aipm/config.json`，不创建 IDE 目录；首次安装需执行 `aipm pull`。
+`init` 仅创建 `.aipm/config.json`，不创建 IDE 目录；首次安装需执行 `aipm install`。
 
 ### 文件冲突处理
 

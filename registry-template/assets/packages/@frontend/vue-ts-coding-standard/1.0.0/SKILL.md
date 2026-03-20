@@ -1,5 +1,5 @@
 ---
-name: vue-ts-coding-standard
+name: "@frontend/vue-ts-coding-standard"
 description: Vue 3 + TypeScript 编码规范：组件结构、命名、类型、注释与代码风格。在编写、审查或重构 Vue/TS 代码时使用。
 ---
 

@@ -113,7 +113,7 @@ Skills 不是一次性配置，而是持续演进的知识载体：
 
 ```bash
 # 新人入职，分配岗位，自动获得岗位专属 AI 能力
-aipm pull
+aipm install
 
 # 效果：.cursor/skills/ 下自动安装该岗位所有 Skills
 # AI 助手立刻懂得：你们的代码规范、Git 流程、评审标准...
@@ -145,7 +145,7 @@ RoleClaw 项目已拆分为两层：
 | **基础层** | **AIPM** | AI 包管理工具：针对不同配置单做库与 IDE 的同步。角色、岗位、项目在 AIPM 中只是不同的配置单，无特殊含义。 |
 | **应用层** | **RoleClaw** | 企业岗位 AI 助手配置与知识沉淀平台，基于 AIPM 做岗位到配置单的映射。 |
 
-- **AIPM**：提供 `aipm pull`、`aipm use <profile>`、`profiles/` 配置单等能力，可独立使用
+- **AIPM**：提供 `aipm install`、`aipm use <profile>`、`profiles/` 配置单等能力，可独立使用
 - **RoleClaw**：在 AIPM 之上增加组织架构、岗位绑定、知识飞轮、管理看板等企业能力
 
 ```
@@ -236,7 +236,7 @@ RoleClaw 项目已拆分为两层：
 ```
 阶段一 · MVP（当前）
   ├── 岗位 Skills/Rules 配置（.aipm/config.json + roles.json）
-  ├── CLI 工具（aipm pull / update / add-skill）
+  ├── CLI 工具（aipm install / update / init-skill）
   ├── 基于 GitHub 私有仓库的 Skills 存储
   └── 兼容 AgentSkills 标准，支持 Cursor / Claude Code
 

@@ -1,5 +1,5 @@
 ---
-name: eng-rules-baseline
+name: "@frontend/eng-rules-baseline"
 description: 前端工程通用规范基线：错误处理、依赖管理、安全与可维护性
 globs: "**/*.{ts,tsx,vue,js,jsx}"
 alwaysApply: false

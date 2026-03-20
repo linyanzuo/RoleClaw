@@ -131,6 +131,16 @@ function resolveLocalBase(baseRef) {
   return isAbsolute(baseRef) ? baseRef : resolve(ROOT, baseRef)
 }
 
+/** Resolve registry ref: if local path does not exist, fall back to bundled registry. */
+function resolveRegistryRef(ref) {
+  if (isUrl(ref)) return ref
+  const abs = resolveLocalBase(ref)
+  if (existsSync(abs)) return ref
+  const bundled = join(TOOL_ROOT, 'registry-template')
+  if (existsSync(bundled)) return bundled
+  return ref
+}
+
 function defaultRegistryRef() {
   // 1) Prefer workspace-local registry for same-repo iteration.
   const localRegistry = join(ROOT, 'registry-template')
@@ -552,7 +562,8 @@ async function resolveDesiredArtifacts(config) {
   let rules = {}
 
   if (config.profile) {
-    const profileArtifacts = await loadProfileConfig(config.registry, config.profile)
+    const registryRef = resolveRegistryRef(config.registry)
+    const profileArtifacts = await loadProfileConfig(registryRef, config.profile)
     if (profileArtifacts) {
       skills = profileArtifacts.skills
       rules = profileArtifacts.rules
@@ -725,13 +736,13 @@ async function cmdInit(args = []) {
   if (config.profile) {
     console.log(`profile: ${config.profile}`)
   }
-  console.log('Run `aipm pull` to install skills and rules.')
+  console.log('Run `aipm install` to install skills and rules.')
 }
 
 async function cmdPull(...args) {
   const config = readConfig()
   const { skills, rules } = await resolveDesiredArtifacts(config)
-  const registry = await fetchRegistry(config.registry)
+  const registry = await fetchRegistry(resolveRegistryRef(config.registry))
   const installPaths = getInstallPaths(config)
   const conflictState = { mode: parseConflictMode(args) }
   const explicitSkills = new Set(Object.keys(config.skills ?? {}))
@@ -747,7 +758,7 @@ async function cmdPull(...args) {
       requestedVersion,
     )
     ARTIFACT_KIND.skill.installDir = installPaths.skillInstallDir
-    const result = await installArtifact(config.registry, 'skill', registryPath, version, {
+    const result = await installArtifact(resolveRegistryRef(config.registry), 'skill', registryPath, version, {
       installName,
       conflictState,
     })
@@ -764,7 +775,7 @@ async function cmdPull(...args) {
       requestedVersion,
     )
     ARTIFACT_KIND.rule.installDir = installPaths.ruleInstallDir
-    const result = await installArtifact(config.registry, 'rule', registryPath, version, {
+    const result = await installArtifact(resolveRegistryRef(config.registry), 'rule', registryPath, version, {
       installName,
       conflictState,
     })
@@ -797,13 +808,13 @@ async function cmdPull(...args) {
   }
 
   writeConfig(config)
-  console.log('pull complete')
+  console.log('install complete')
 }
 
 async function cmdList() {
   const config = readConfigOrDefault()
   const { skills, rules } = await resolveDesiredArtifacts(config)
-  const registry = await fetchRegistry(config.registry)
+  const registry = await fetchRegistry(resolveRegistryRef(config.registry))
   const installPaths = getInstallPaths(config)
 
   console.log(`registry: ${config.registry}`)
@@ -828,7 +839,7 @@ async function cmdList() {
 async function cmdUpdate(name, ...args) {
   const config = readConfig()
   const { skills, rules } = await resolveDesiredArtifacts(config)
-  const registry = await fetchRegistry(config.registry)
+  const registry = await fetchRegistry(resolveRegistryRef(config.registry))
   const installPaths = getInstallPaths(config)
   const conflictState = { mode: parseConflictMode(args) }
 
@@ -853,7 +864,7 @@ async function cmdUpdate(name, ...args) {
       'latest',
     )
     ARTIFACT_KIND.skill.installDir = installPaths.skillInstallDir
-    const result = await installArtifact(config.registry, 'skill', registryPath, version, {
+    const result = await installArtifact(resolveRegistryRef(config.registry), 'skill', registryPath, version, {
       installName,
       conflictState,
     })
@@ -870,7 +881,7 @@ async function cmdUpdate(name, ...args) {
       'latest',
     )
     ARTIFACT_KIND.rule.installDir = installPaths.ruleInstallDir
-    const result = await installArtifact(config.registry, 'rule', registryPath, version, {
+    const result = await installArtifact(resolveRegistryRef(config.registry), 'rule', registryPath, version, {
       installName,
       conflictState,
     })
@@ -912,7 +923,7 @@ async function cmdDoctor() {
   let registry
 
   try {
-    registry = await fetchRegistry(config.registry)
+    registry = await fetchRegistry(resolveRegistryRef(config.registry))
     console.log('[ok] registry is reachable')
   } catch (error) {
     console.log(`[fail] registry check failed: ${error.message}`)
@@ -1004,7 +1015,7 @@ function listAvailableProfiles(registryRef) {
 async function cmdUse(profileId) {
   if (!profileId) {
     const config = readConfigOrDefault()
-    const profiles = listAvailableProfiles(config.registry)
+    const profiles = listAvailableProfiles(resolveRegistryRef(config.registry))
     if (!profiles.length) {
       console.log('No profiles found in registry. Add profiles/*.json to your registry.')
       return
@@ -1016,7 +1027,7 @@ async function cmdUse(profileId) {
   }
 
   const config = readConfigOrDefault()
-  const profileData = await loadProfileConfig(config.registry, profileId)
+  const profileData = await loadProfileConfig(resolveRegistryRef(config.registry), profileId)
   if (!profileData) {
     throw new Error(`Profile '${profileId}' not found. Check registry has profiles/${profileId}.json`)
   }
@@ -1028,16 +1039,16 @@ async function cmdUse(profileId) {
   writeConfig(config)
 
   console.log(`Switched to profile: ${profileId}`)
-  console.log('Run `aipm pull` to sync skills and rules.')
+  console.log('Run `aipm install` to sync skills and rules.')
 }
 
-async function cmdAdd(name, version = 'latest') {
+async function cmdInstallSkill(name, version = 'latest') {
   if (!name) {
-    throw new Error('Usage: aipm add <name> [version]  (name: git-workflow or @scope/git-workflow)')
+    throw new Error('Usage: aipm install-skill <name> [version]  (name: @scope/name or scope_name)')
   }
 
   const config = readConfigOrDefault()
-  const registry = await fetchRegistry(config.registry)
+  const registry = await fetchRegistry(resolveRegistryRef(config.registry))
   const { registryPath, installName, version: resolvedVersion } = resolveArtifactPath(
     registry,
     'skill',
@@ -1048,49 +1059,128 @@ async function cmdAdd(name, version = 'latest') {
 
   ensureIdeDirs(installPaths)
   ARTIFACT_KIND.skill.installDir = installPaths.skillInstallDir
-  await installArtifact(config.registry, 'skill', registryPath, resolvedVersion, {
+  await installArtifact(resolveRegistryRef(config.registry), 'skill', registryPath, resolvedVersion, {
     installName,
   })
 
-  config.skills[name] = resolvedVersion
+  config.skills ??= {}
+  config.skills[registryPath] = resolvedVersion
   writeConfig(config)
 
-  console.log(`added skill ${name}@${resolvedVersion}`)
+  console.log(`installed skill ${registryPath}@${resolvedVersion}`)
 }
 
-async function cmdRemove(name) {
+async function cmdInstallRule(name, version = 'latest') {
   if (!name) {
-    throw new Error('Usage: aipm remove <name>  (name: git-workflow or @scope/git-workflow)')
+    throw new Error('Usage: aipm install-rule <name> [version]  (name: @scope/name or scope_name)')
+  }
+
+  const config = readConfigOrDefault()
+  const registry = await fetchRegistry(resolveRegistryRef(config.registry))
+  const { registryPath, installName, version: resolvedVersion } = resolveArtifactPath(
+    registry,
+    'rule',
+    name,
+    version,
+  )
+  const installPaths = getInstallPaths(config)
+
+  ensureIdeDirs(installPaths)
+  ARTIFACT_KIND.rule.installDir = installPaths.ruleInstallDir
+  await installArtifact(resolveRegistryRef(config.registry), 'rule', registryPath, resolvedVersion, {
+    installName,
+  })
+
+  config.rules ??= {}
+  config.rules[registryPath] = resolvedVersion
+  writeConfig(config)
+
+  console.log(`installed rule ${registryPath}@${resolvedVersion}`)
+}
+
+/** Resolve user name to registryPath and installName for uninstall. Handles @scope/name and scope_name. */
+function resolveNameForUninstall(config, registry, name, kind) {
+  const installName =
+    name.startsWith('@') && name.includes('/') ? registryPathToInstallName(name) : name
+  const obj = kind === 'skill' ? config.skills : config.rules
+  const findRegistryPath = () =>
+    obj?.[name] ? name : Object.keys(obj ?? {}).find((k) => registryPathToInstallName(k) === name)
+  const registryPath = findRegistryPath()
+  if (registryPath) {
+    try {
+      const r = resolveArtifactPath(registry, kind, registryPath, obj[registryPath])
+      return { registryPath, installName: r.installName }
+    } catch {
+      return { registryPath, installName }
+    }
+  }
+  return { registryPath: null, installName }
+}
+
+async function cmdUninstallSkill(name) {
+  if (!name) {
+    throw new Error('Usage: aipm uninstall-skill <name>  (name: @scope/name or scope_name)')
   }
 
   const config = readConfig()
   const installPaths = getInstallPaths(config)
 
-  const toRemove = []
+  let registryPath, installName
   try {
-    const registry = await fetchRegistry(config.registry)
-    if (config.skills?.[name]) {
-      const r = resolveArtifactPath(registry, 'skill', name, config.skills[name])
-      toRemove.push({ kind: 'skill', installName: r.installName })
-    }
-    if (config.rules?.[name]) {
-      const r = resolveArtifactPath(registry, 'rule', name, config.rules[name])
-      toRemove.push({ kind: 'rule', installName: r.installName })
-    }
+    const registry = await fetchRegistry(resolveRegistryRef(config.registry))
+    const r = resolveNameForUninstall(config, registry, name, 'skill')
+    registryPath = r.registryPath
+    installName = r.installName
   } catch {
-    toRemove.push({ kind: 'skill', installName: name }, { kind: 'rule', installName: name })
+    installName =
+      name.startsWith('@') && name.includes('/') ? registryPathToInstallName(name) : name
+    registryPath = config.skills?.[name]
+      ? name
+      : Object.keys(config.skills ?? {}).find((k) => registryPathToInstallName(k) === name)
   }
 
-  for (const { kind, installName } of toRemove) {
-    const dir = kind === 'skill' ? installPaths.skillInstallDir : installPaths.ruleInstallDir
-    rmSync(join(dir, installName), { recursive: true, force: true })
+  const targetDir = join(installPaths.skillInstallDir, installName)
+  if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true })
+
+  if (registryPath && config.skills?.[registryPath]) {
+    delete config.skills[registryPath]
+    writeConfig(config)
   }
 
-  if (config.skills?.[name]) delete config.skills[name]
-  if (config.rules?.[name]) delete config.rules[name]
-  writeConfig(config)
+  console.log('uninstalled skill (if existed)')
+}
 
-  console.log(`removed artifact ${name} (if existed)`)
+async function cmdUninstallRule(name) {
+  if (!name) {
+    throw new Error('Usage: aipm uninstall-rule <name>  (name: @scope/name or scope_name)')
+  }
+
+  const config = readConfig()
+  const installPaths = getInstallPaths(config)
+
+  let registryPath, installName
+  try {
+    const registry = await fetchRegistry(resolveRegistryRef(config.registry))
+    const r = resolveNameForUninstall(config, registry, name, 'rule')
+    registryPath = r.registryPath
+    installName = r.installName
+  } catch {
+    installName =
+      name.startsWith('@') && name.includes('/') ? registryPathToInstallName(name) : name
+    registryPath = config.rules?.[name]
+      ? name
+      : Object.keys(config.rules ?? {}).find((k) => registryPathToInstallName(k) === name)
+  }
+
+  const targetDir = join(installPaths.ruleInstallDir, installName)
+  if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true })
+
+  if (registryPath && config.rules?.[registryPath]) {
+    delete config.rules[registryPath]
+    writeConfig(config)
+  }
+
+  console.log('uninstalled rule (if existed)')
 }
 
 /**
@@ -1102,34 +1192,50 @@ async function cmdPush(...args) {
   const filtered = args.filter((a) => !a.startsWith('-'))
   const name = filtered[0]
   const config = readConfig()
-  if (isUrl(config.registry)) {
+  const registryRef = resolveRegistryRef(config.registry)
+  if (isUrl(registryRef)) {
     throw new Error(
-      'push only works with local registry. Your registry is a URL. ' +
+      'publish only works with local registry. Your registry is a URL. ' +
         'To contribute changes, edit the registry repo directly and submit a PR.',
     )
   }
 
   const verbose = args.includes('--verbose') || args.includes('-v')
-  const registryBase = resolveLocalBase(config.registry)
+  const registryBase = resolveLocalBase(registryRef)
   const { skills, rules } = await resolveDesiredArtifacts(config)
-  const registry = await fetchRegistry(config.registry)
+  const registry = await fetchRegistry(registryRef)
   const installPaths = getInstallPaths(config)
 
   if (verbose) {
-    console.log(`[push] workspace root: ${ROOT}`)
-    console.log(`[push] registry: ${registryBase}`)
-    console.log(`[push] source: ${installPaths.skillInstallDir} + ${installPaths.ruleInstallDir}`)
+    console.log(`[publish] workspace root: ${ROOT}`)
+    console.log(`[publish] registry: ${registryBase}`)
+    console.log(`[publish] source: ${installPaths.skillInstallDir} + ${installPaths.ruleInstallDir}`)
   }
 
-  const skillTargets = name
+  let skillTargets = name
     ? (skills[name] ? [name] : Object.keys(skills).filter((k) => registryPathToInstallName(k) === name))
     : Object.keys(skills)
-  const ruleTargets = name
+  let ruleTargets = name
     ? (rules[name] ? [name] : Object.keys(rules).filter((k) => registryPathToInstallName(k) === name))
     : Object.keys(rules)
 
   if (name && !skillTargets.length && !ruleTargets.length) {
     throw new Error(`'${name}' is not declared in current skills/rules`)
+  }
+
+  // When publishing all (no name), only publish artifacts that exist in IDE. Skip profile-declared but not-yet-installed.
+  if (!name) {
+    skillTargets = skillTargets.filter((p) =>
+      existsSync(join(installPaths.skillInstallDir, registryPathToInstallName(p))),
+    )
+    ruleTargets = ruleTargets.filter((p) =>
+      existsSync(join(installPaths.ruleInstallDir, registryPathToInstallName(p))),
+    )
+    if (!skillTargets.length && !ruleTargets.length) {
+      throw new Error(
+        'No skills or rules found in IDE. Run `aipm init-skill` to create, or `aipm install` to install from registry.',
+      )
+    }
   }
 
   function pushArtifact(kind, installName, registryPath, version) {
@@ -1176,40 +1282,111 @@ async function cmdPush(...args) {
   }
 
   for (const packageName of skillTargets) {
-    const { registryPath, installName } = resolveArtifactPath(
-      registry,
-      'skill',
-      packageName,
-      config.skills?.[packageName] ?? skills[packageName] ?? '1.0.0',
-    )
     const version = config.skills?.[packageName] ?? skills[packageName] ?? '1.0.0'
-    pushArtifact('skill', installName, registryPath, version)
+    const isNew = !registry.packages?.[packageName]
+    if (isNew) {
+      await addArtifactToRegistry('skill', packageName, version, args)
+    } else {
+      const { registryPath, installName } = resolveArtifactPath(
+        registry,
+        'skill',
+        packageName,
+        version,
+      )
+      pushArtifact('skill', installName, registryPath, version)
+    }
   }
 
   for (const packageName of ruleTargets) {
-    const { registryPath, installName } = resolveArtifactPath(
-      registry,
-      'rule',
-      packageName,
-      config.rules?.[packageName] ?? rules[packageName] ?? '1.0.0',
-    )
     const version = config.rules?.[packageName] ?? rules[packageName] ?? '1.0.0'
-    pushArtifact('rule', installName, registryPath, version)
+    const isNew = !registry.rules?.[packageName]
+    if (isNew) {
+      await addArtifactToRegistry('rule', packageName, version, args)
+    } else {
+      const { registryPath, installName } = resolveArtifactPath(
+        registry,
+        'rule',
+        packageName,
+        version,
+      )
+      pushArtifact('rule', installName, registryPath, version)
+    }
   }
 
-  console.log('push complete. Run `git add` and `git commit` in the registry to save changes.')
+  console.log('publish complete. Run `git add` and `git commit` in the registry to save changes.')
+}
+
+/** Scaffold IDE artifact dir. Creates package.json, .aipm, and marker file. */
+function scaffoldArtifactDir(kind, installName, registryPath, version, description = null) {
+  const kindConfig = ARTIFACT_KIND[kind]
+  const config = readConfig()
+  const installPaths = getInstallPaths(config)
+  const srcDir =
+    kind === 'skill'
+      ? join(installPaths.skillInstallDir, installName)
+      : join(installPaths.ruleInstallDir, installName)
+
+  mkdirSync(srcDir, { recursive: true })
+
+  const logicalName = registryPath.includes('/') ? registryPath.split('/').pop() : registryPath
+  const desc = description ?? `${kind}: ${logicalName}`
+
+  writeFileSync(
+    join(srcDir, VERSION_MARKER),
+    JSON.stringify({ version, registryPath }, null, 0),
+    'utf-8',
+  )
+
+  const pkg = {
+    name: registryPath,
+    version,
+    description: desc,
+    aipm: { type: kind },
+  }
+  writeFileSync(join(srcDir, 'package.json'), JSON.stringify(pkg, null, 2) + '\n', 'utf-8')
+
+  const markerContent =
+    kind === 'skill'
+      ? `---
+name: "${installName}"
+description: "${desc}"
+---
+
+# ${logicalName}
+
+<!-- Add skill content here. -->\n`
+      : `---
+name: "${installName}"
+description: "${desc}"
+---
+
+# ${logicalName}
+
+<!-- Add rule content here. -->\n`
+  writeFileSync(join(srcDir, kindConfig.markerFile), markerContent, 'utf-8')
+
+  console.log(`Created ${kind} scaffold at ${relative(ROOT, srcDir)}`)
+  return srcDir
 }
 
 /** Add artifact (skill or rule) from IDE to Registry. */
-async function addArtifactToRegistry(kind, installName, version, args) {
+async function addArtifactToRegistry(kind, name, version, args) {
   const kindConfig = ARTIFACT_KIND[kind]
   const config = readConfig()
-  if (isUrl(config.registry)) {
+  const registryRef = resolveRegistryRef(config.registry)
+  if (isUrl(registryRef)) {
     throw new Error(`add-${kind} only works with local registry.`)
   }
 
-  const registryBase = resolveLocalBase(config.registry)
+  const registryBase = resolveLocalBase(registryRef)
   const installPaths = getInstallPaths(config)
+
+  // Resolve name to installName for IDE directory lookup.
+  // IDE dirs use scope_name (e.g. frontend_vue-ts-coding-standard), registry uses @scope/name.
+  const installName =
+    name.startsWith('@') && name.includes('/') ? registryPathToInstallName(name) : name
+
+  ensureIdeDirs(installPaths)
 
   const srcDir =
     kind === 'skill'
@@ -1217,12 +1394,8 @@ async function addArtifactToRegistry(kind, installName, version, args) {
       : join(installPaths.ruleInstallDir, installName)
 
   if (!existsSync(srcDir)) {
-    const dirHint =
-      kind === 'skill'
-        ? installPaths.skillInstallDir
-        : installPaths.ruleInstallDir
     throw new Error(
-      `${kind} '${installName}' not found in ${dirHint}. Create .<ide>/${kind}s/${installName}/ with ${kindConfig.markerFile} first.`,
+      `${kind} '${installName}' not found. Run \`aipm init-${kind}\` to create a new package first.`,
     )
   }
 
@@ -1319,31 +1492,108 @@ async function addArtifactToRegistry(kind, installName, version, args) {
   console.log(`  Run \`git add\` in the registry to save.`)
 }
 
-async function cmdAddSkill(...args) {
-  const filtered = args.filter((a) => !a.startsWith('-'))
-  const name = filtered[0]
-  const version = filtered[1] ?? '1.0.0'
-  if (!name) throw new Error('Usage: aipm add-skill <name> [version] [--overwrite]')
-  await addArtifactToRegistry('skill', name, version, args)
+/** Create new skill/rule package interactively. Prompts for name, description, version. */
+async function cmdInitSkill() {
+  if (!process.stdin.isTTY) {
+    throw new Error('aipm init-skill requires interactive mode. Run in a terminal.')
+  }
+  const config = readConfig()
+  const installPaths = getInstallPaths(config)
+  ensureIdeDirs(installPaths)
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  console.log('\nCreate a new skill package (npm-style: @scope/name or scope_name)\n')
+
+  const name = await question(rl, 'Package name', '')
+  if (!name.trim()) {
+    rl.close()
+    throw new Error('Package name is required')
+  }
+  const registryPath =
+    name.startsWith('@') && name.includes('/') ? name.trim() : installNameToRegistryPath(name.trim())
+  const installName = registryPathToInstallName(registryPath)
+
+  const srcDir = join(installPaths.skillInstallDir, installName)
+  if (existsSync(srcDir)) {
+    rl.close()
+    throw new Error(`Skill '${installName}' already exists at ${relative(ROOT, srcDir)}`)
+  }
+
+  validateRegistryPath(registryPath, 'Skill')
+
+  const description = await question(
+    rl,
+    'Description',
+    `skill: ${registryPath.includes('/') ? registryPath.split('/').pop() : registryPath}`,
+  )
+  const version = await question(rl, 'Version', '1.0.0')
+  rl.close()
+
+  scaffoldArtifactDir('skill', installName, registryPath, version, description || undefined)
+
+  config.skills ??= {}
+  config.skills[registryPath] = version
+  writeConfig(config)
+
+  console.log(`\nSkill created. Edit ${relative(ROOT, join(srcDir, 'SKILL.md'))} then run \`aipm publish ${registryPath}\` to publish.`)
 }
 
-async function cmdAddRule(...args) {
-  const filtered = args.filter((a) => !a.startsWith('-'))
-  const name = filtered[0]
-  const version = filtered[1] ?? '1.0.0'
-  if (!name) throw new Error('Usage: aipm add-rule <name> [version] [--overwrite]')
-  await addArtifactToRegistry('rule', name, version, args)
+/** Create new rule package interactively. */
+async function cmdInitRule() {
+  if (!process.stdin.isTTY) {
+    throw new Error('aipm init-rule requires interactive mode. Run in a terminal.')
+  }
+  const config = readConfig()
+  const installPaths = getInstallPaths(config)
+  ensureIdeDirs(installPaths)
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  console.log('\nCreate a new rule package (npm-style: @scope/name or scope_name)\n')
+
+  const name = await question(rl, 'Package name', '')
+  if (!name.trim()) {
+    rl.close()
+    throw new Error('Package name is required')
+  }
+  const registryPath =
+    name.startsWith('@') && name.includes('/') ? name.trim() : installNameToRegistryPath(name.trim())
+  const installName = registryPathToInstallName(registryPath)
+
+  const srcDir = join(installPaths.ruleInstallDir, installName)
+  if (existsSync(srcDir)) {
+    rl.close()
+    throw new Error(`Rule '${installName}' already exists at ${relative(ROOT, srcDir)}`)
+  }
+
+  validateRegistryPath(registryPath, 'Rule')
+
+  const description = await question(
+    rl,
+    'Description',
+    `rule: ${registryPath.includes('/') ? registryPath.split('/').pop() : registryPath}`,
+  )
+  const version = await question(rl, 'Version', '1.0.0')
+  rl.close()
+
+  scaffoldArtifactDir('rule', installName, registryPath, version, description || undefined)
+
+  config.rules ??= {}
+  config.rules[registryPath] = version
+  writeConfig(config)
+
+  console.log(`\nRule created. Edit ${relative(ROOT, join(srcDir, 'RULE.md'))} then run \`aipm publish ${registryPath}\` to publish.`)
 }
 
 /** Remove artifact from Registry. Name can be registry path (e.g. shared/git-workflow) or logical name. */
 async function removeArtifactFromRegistry(kind, name) {
   const kindConfig = ARTIFACT_KIND[kind]
   const config = readConfig()
-  if (isUrl(config.registry)) {
-    throw new Error(`remove-${kind} only works with local registry.`)
+  const registryRef = resolveRegistryRef(config.registry)
+  if (isUrl(registryRef)) {
+    throw new Error(`unpublish-${kind} only works with local registry.`)
   }
 
-  const registryBase = resolveLocalBase(config.registry)
+  const registryBase = resolveLocalBase(registryRef)
   const registry = JSON.parse(readFileSync(join(registryBase, 'registry.json'), 'utf-8'))
   const registryKey = kindConfig.registryKey
   const index = registry[registryKey] ?? {}
@@ -1375,36 +1625,23 @@ async function removeArtifactFromRegistry(kind, name) {
     writeConfig(config)
   }
 
-  console.log(`Removed ${kind} ${registryPath} from registry`)
+  console.log(`Unpublished ${kind} ${registryPath} from registry`)
 }
 
-async function cmdRemoveSkill(name) {
-  if (!name) throw new Error('Usage: aipm remove-skill <name>')
+async function cmdUnpublishSkill(name) {
+  if (!name) throw new Error('Usage: aipm unpublish-skill <name>')
   await removeArtifactFromRegistry('skill', name)
 }
 
-async function cmdRemoveRule(name) {
-  if (!name) throw new Error('Usage: aipm remove-rule <name>')
+async function cmdUnpublishRule(name) {
+  if (!name) throw new Error('Usage: aipm unpublish-rule <name>')
   await removeArtifactFromRegistry('rule', name)
-}
-
-/** Update artifact in Registry (sync from IDE). Same as push for single artifact. */
-async function cmdUpdateSkill(...args) {
-  const name = args.filter((a) => !a.startsWith('-'))[0]
-  if (!name) throw new Error('Usage: aipm update-skill <name> [-v]')
-  await cmdPush(name, ...args)
-}
-
-async function cmdUpdateRule(...args) {
-  const name = args.filter((a) => !a.startsWith('-'))[0]
-  if (!name) throw new Error('Usage: aipm update-rule <name> [-v]')
-  await cmdPush(name, ...args)
 }
 
 
 async function cmdSearch(query = '') {
   const config = readConfigOrDefault()
-  const registry = await fetchRegistry(config.registry)
+  const registry = await fetchRegistry(resolveRegistryRef(config.registry))
 
   const skillResults = Object.entries(registry.packages ?? {}).filter(([name, item]) => {
     return (
@@ -1452,32 +1689,37 @@ async function cmdSearch(query = '') {
 const HELP = `
 aipm - Skills and Rules CLI
 
+Two key roles:
+  1. Package lifecycle: create packages (init-skill/init-rule), publish to Registry
+  2. IDE management: install packages per profile config, ensure IDE matches declared versions
+
 Usage:
   aipm <command> [args]
 
 Primary commands:
-  init [--registry PATH]   Create .aipm/config.json (interactive; use AIPM_REGISTRY or --registry for external registry)
-  pull [--on-conflict=..] Install declared skills and rules
+  init [--registry PATH]   Create .aipm/config.json (interactive)
+  install [--on-conflict=..]
+                          Install declared skills/rules from Registry to IDE (reads profile)
   list                    List declared and installed skills/rules
   update [name] [--on-conflict=..]
                           Update one artifact or all artifacts
-  push [name] [-v]         Push IDE edits back to local registry (local only; -v verbose)
+  publish [name] [-v]      Sync latest version to Registry (local only; -v verbose)
   doctor                  Check config, registry, and local installs
 
+Create new packages (interactive):
+  init-skill              Create new skill (prompts: name, description, version)
+  init-rule               Create new rule (prompts: name, description, version)
+
 Registry commands (local registry only):
-  add-skill <name> [version] [--overwrite]
-                          Add skill from IDE to registry
-  add-rule <name> [version] [--overwrite]
-                          Add rule from IDE to registry
-  remove-skill <name>      Remove skill from registry
-  remove-rule <name>       Remove rule from registry
-  update-skill <name> [-v] Sync skill from IDE to registry
-  update-rule <name> [-v]  Sync rule from IDE to registry
+  unpublish-skill <name> Remove skill from registry
+  unpublish-rule <name>  Remove rule from registry
 
 Additional commands:
   use [profile-id]        Switch to profile (配置单). Without arg, list available profiles.
-  add <skill> [version]   Add and install one skill from registry
-  remove <name>           Remove artifact from local config and IDE
+  install-skill <name> [version]   Add skill to config and install from registry
+  install-rule <name> [version]   Add rule to config and install from registry
+  uninstall-skill <name>  Remove skill from config and IDE
+  uninstall-rule <name>   Remove rule from config and IDE
   search [keyword]        Search skills and rules in registry
   help, --help, -h        Show this help
 
@@ -1486,7 +1728,7 @@ Config keys:
   skills, rules           Dependencies (npm-style: name -> version). Override profile.
   ide                     Target IDE runtime directory (cursor|codex)
 
-Conflict options (pull/update):
+Conflict options (install/update):
   --on-conflict=ask       Ask per conflict (default; interactive shells only)
   --on-conflict=skip      Skip conflicting files/directories
   --on-conflict=overwrite Overwrite conflicting files/directories
@@ -1494,20 +1736,20 @@ Conflict options (pull/update):
 
 const COMMANDS = {
   init: cmdInit,
-  pull: cmdPull,
+  install: cmdPull,
   list: cmdList,
   update: cmdUpdate,
-  push: cmdPush,
+  publish: cmdPush,
   use: cmdUse,
-  'add-skill': cmdAddSkill,
-  'add-rule': cmdAddRule,
-  'remove-skill': cmdRemoveSkill,
-  'remove-rule': cmdRemoveRule,
-  'update-skill': cmdUpdateSkill,
-  'update-rule': cmdUpdateRule,
+  'init-skill': cmdInitSkill,
+  'init-rule': cmdInitRule,
+  'unpublish-skill': cmdUnpublishSkill,
+  'unpublish-rule': cmdUnpublishRule,
   doctor: cmdDoctor,
-  add: cmdAdd,
-  remove: cmdRemove,
+  'install-skill': cmdInstallSkill,
+  'install-rule': cmdInstallRule,
+  'uninstall-skill': cmdUninstallSkill,
+  'uninstall-rule': cmdUninstallRule,
   search: cmdSearch,
 }
 

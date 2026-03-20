@@ -4,10 +4,10 @@
 
 ## 概述
 
-`.aipm` 是版本标记文件，用于版本感知的 pull/update 逻辑。
+`.aipm` 是版本标记文件，用于版本感知的 install/update 逻辑。
 
 - **Registry 中**：每个 Skill/Rule 版本目录必须包含 `.aipm`，并列入 `files.json`，作为该资源的配置声明
-- **安装目录中**：`aipm pull` 会复制或写入 `.aipm` 到 `.cursor/skills/<name>/`、`.cursor/rules/<name>/`
+- **安装目录中**：`aipm install` 会复制或写入 `.aipm` 到 `.cursor/skills/<name>/`、`.cursor/rules/<name>/`
 
 - **AI 工具不扫描此文件**，不影响 Skill/Rule 的识别与加载
 - **不修改 SKILL.md / RULE.md**，保持 artifact 内容纯净
@@ -34,7 +34,7 @@
 
 ## 版本感知逻辑
 
-`aipm pull` 安装前会检查目标目录：
+`aipm install` 安装前会检查目标目录：
 
 - **存在 `.aipm` 且版本相同** → 跳过
 - **存在 `.aipm` 且目标版本更高** → 提示是否覆盖

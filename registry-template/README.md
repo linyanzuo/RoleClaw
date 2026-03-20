@@ -96,7 +96,7 @@ registry-template/
 1. 在 `profiles/` 下新建 `<profile-id>.json`
 2. 填写 `skills`、`rules`
 3. 执行 `aipm use <profile-id>` 切换配置单
-4. 执行 `aipm pull` 按当前配置单同步到 IDE
+4. 执行 `aipm install` 按当前配置单同步到 IDE
 
 ---
 
@@ -187,12 +187,13 @@ SKILL.md 的 `name` 在安装时会被改写为 installName，保证 AI 能正�
 
 ```bash
 aipm init              # 创建配置
-aipm pull              # 安装声明的 skills/rules
+aipm install           # 安装声明的 skills/rules
 aipm list              # 查看声明与安装状态
-aipm add git-workflow  # 添加并安装
-aipm add @frontend-eng/git-workflow
-aipm remove <name>     # 移除
-aipm push              # 回写 IDE 编辑到 Registry
+aipm install-skill git-workflow  # 添加并安装
+aipm install-skill @frontend-eng/git-workflow
+aipm uninstall-skill <name>  # 移除 skill
+aipm uninstall-rule <name>   # 移除 rule
+aipm publish           # 回写 IDE 编辑到 Registry
 ```
 
 ## 与 npm 对照

@@ -56,7 +56,7 @@ function Print-NextSteps {
     Write-Host "Next steps (per project):"
     Write-Host "  cd C:\path\to\your\project"
     Write-Host "  aipm init          # interactive: select IDE & role"
-    Write-Host "  aipm pull          # install skills and rules"
+    Write-Host "  aipm install       # install skills and rules"
     Write-Host ""
     Write-Host "If project has no registry-template, set Registry path:"
     Write-Host '  $env:AIPM_REGISTRY = "C:\path\to\registry"; aipm init'

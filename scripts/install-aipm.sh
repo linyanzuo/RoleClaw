@@ -50,7 +50,7 @@ print_next_steps() {
   echo "Next steps (per project):"
   echo "  cd /path/to/your/project"
   echo "  aipm init          # interactive: select IDE & profile"
-  echo "  aipm pull          # install skills and rules"
+  echo "  aipm install       # install skills and rules"
   echo
   echo "If project has no registry-template, set Registry path:"
   echo "  AIPM_REGISTRY=/path/to/registry aipm init"
