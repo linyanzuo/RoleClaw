@@ -1,0 +1,6 @@
+{
+  "name": "@test/test-rules-baseline",
+  "version": "1.0.0",
+  "description": "测试工程通用规范基线：用例独立性、可重复性、可追溯性",
+  "aipm": { "type": "rule" }
+}

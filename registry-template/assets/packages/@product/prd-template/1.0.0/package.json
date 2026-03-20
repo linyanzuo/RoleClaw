@@ -1,0 +1,6 @@
+{
+  "name": "@product/prd-template",
+  "version": "1.0.0",
+  "description": "PRD 文档模板与结构：背景、目标、需求、验收标准",
+  "aipm": { "type": "skill" }
+}

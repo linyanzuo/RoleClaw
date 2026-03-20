@@ -1,0 +1,6 @@
+{
+  "name": "@ui-designer/design-review-guide",
+  "version": "1.0.0",
+  "description": "设计评审规范：一致性、可用性、可落地性",
+  "aipm": { "type": "skill" }
+}

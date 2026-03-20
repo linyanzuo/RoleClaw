@@ -1,0 +1,6 @@
+{
+  "name": "@ui-designer/design-rules-baseline",
+  "version": "1.0.0",
+  "description": "设计交付通用规范基线：命名、标注、可落地性",
+  "aipm": { "type": "rule" }
+}

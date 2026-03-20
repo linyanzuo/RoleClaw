@@ -2,6 +2,12 @@
   "profile": "flutter-engineer",
   "name": "Flutter 工程师",
   "description": "负责跨平台移动端应用开发与 Flutter 技术交付",
-  "skills": {},
-  "rules": {}
+  "skills": {
+    "@flutter/flutter-coding-standard": "1.0.0",
+    "@flutter/git-workflow": "1.0.0",
+    "@flutter/code-review-guide": "1.0.0"
+  },
+  "rules": {
+    "@flutter/eng-rules-baseline": "1.0.0"
+  }
 }

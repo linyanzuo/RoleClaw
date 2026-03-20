@@ -1,0 +1,6 @@
+{
+  "name": "@ui-designer/figma-workflow",
+  "version": "1.0.0",
+  "description": "Figma 设计工作流：命名、图层结构、组件化、交付规范",
+  "aipm": { "type": "skill" }
+}

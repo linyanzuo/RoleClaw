@@ -1,0 +1,6 @@
+{
+  "name": "@product/product-rules-baseline",
+  "version": "1.0.0",
+  "description": "产品文档通用规范基线：可验证性、可追溯性",
+  "aipm": { "type": "rule" }
+}

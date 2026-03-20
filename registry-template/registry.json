@@ -44,6 +44,78 @@
       "versions": ["1.0.0"],
       "description": "维护并扩展当前仓库中的 CP Flutter 组件体系。适用于修改 `lib/theme/widgets/` 下的组件、对齐本地 Figma HTML 视觉规范、补充组件状态和动效、扩展可配置 API，或更新组件测试。当前基线组件为 `CPThemeButton`。",
       "tags": ["cp component system"]
+    },
+    "@flutter/flutter-coding-standard": {
+      "latest": "1.0.0",
+      "versions": ["1.0.0"],
+      "description": "Flutter + Dart 编码规范：组件结构、命名、状态管理、注释与代码风格",
+      "tags": ["flutter", "dart", "coding-standard"]
+    },
+    "@flutter/git-workflow": {
+      "latest": "1.0.0",
+      "versions": ["1.0.0"],
+      "description": "Git 工作流规范：提交信息、分支命名、PR 流程与提交流程",
+      "tags": ["git", "workflow", "flutter"]
+    },
+    "@flutter/code-review-guide": {
+      "latest": "1.0.0",
+      "versions": ["1.0.0"],
+      "description": "Flutter/Dart 代码审查规范：正确性、性能、可维护性与最佳实践",
+      "tags": ["code-review", "flutter", "dart"]
+    },
+    "@ui-designer/design-system-guide": {
+      "latest": "1.0.0",
+      "versions": ["1.0.0"],
+      "description": "设计系统规范：色彩、字体、间距、组件规范与设计 Token",
+      "tags": ["design", "design-system", "ui"]
+    },
+    "@ui-designer/figma-workflow": {
+      "latest": "1.0.0",
+      "versions": ["1.0.0"],
+      "description": "Figma 设计工作流：命名、图层结构、组件化、交付规范",
+      "tags": ["figma", "design", "workflow"]
+    },
+    "@ui-designer/design-review-guide": {
+      "latest": "1.0.0",
+      "versions": ["1.0.0"],
+      "description": "设计评审规范：一致性、可用性、可落地性",
+      "tags": ["design", "review", "ui"]
+    },
+    "@test/test-case-design": {
+      "latest": "1.0.0",
+      "versions": ["1.0.0"],
+      "description": "测试用例设计规范：等价类、边界值、场景覆盖与用例模板",
+      "tags": ["test", "test-case", "qa"]
+    },
+    "@test/automation-guide": {
+      "latest": "1.0.0",
+      "versions": ["1.0.0"],
+      "description": "自动化测试规范：单元测试、集成测试、E2E 与 CI 集成",
+      "tags": ["test", "automation", "qa"]
+    },
+    "@test/git-workflow": {
+      "latest": "1.0.0",
+      "versions": ["1.0.0"],
+      "description": "Git 工作流规范：提交信息、分支命名、PR 流程与提交流程",
+      "tags": ["git", "workflow", "test"]
+    },
+    "@product/prd-template": {
+      "latest": "1.0.0",
+      "versions": ["1.0.0"],
+      "description": "PRD 文档模板与结构：背景、目标、需求、验收标准",
+      "tags": ["product", "prd", "document"]
+    },
+    "@product/requirement-analysis": {
+      "latest": "1.0.0",
+      "versions": ["1.0.0"],
+      "description": "需求分析规范：用户故事、验收条件、优先级与需求拆解",
+      "tags": ["product", "requirement", "analysis"]
+    },
+    "@product/git-workflow": {
+      "latest": "1.0.0",
+      "versions": ["1.0.0"],
+      "description": "Git 工作流规范：提交信息、分支命名、PR 流程与提交流程",
+      "tags": ["git", "workflow", "product"]
     }
   },
   "rules": {
@@ -52,6 +124,30 @@
       "versions": ["1.0.0"],
       "description": "前端工程通用规范基线：错误处理、依赖管理、安全与可维护性",
       "tags": ["engineering", "baseline", "frontend"]
+    },
+    "@flutter/eng-rules-baseline": {
+      "latest": "1.0.0",
+      "versions": ["1.0.0"],
+      "description": "Flutter 工程通用规范基线：错误处理、依赖管理、可维护性",
+      "tags": ["engineering", "baseline", "flutter"]
+    },
+    "@ui-designer/design-rules-baseline": {
+      "latest": "1.0.0",
+      "versions": ["1.0.0"],
+      "description": "设计交付通用规范基线：命名、标注、可落地性",
+      "tags": ["design", "baseline", "ui"]
+    },
+    "@test/test-rules-baseline": {
+      "latest": "1.0.0",
+      "versions": ["1.0.0"],
+      "description": "测试工程通用规范基线：用例独立性、可重复性、可追溯性",
+      "tags": ["test", "baseline", "qa"]
+    },
+    "@product/product-rules-baseline": {
+      "latest": "1.0.0",
+      "versions": ["1.0.0"],
+      "description": "产品文档通用规范基线：可验证性、可追溯性",
+      "tags": ["product", "baseline", "document"]
     }
   }
 }
