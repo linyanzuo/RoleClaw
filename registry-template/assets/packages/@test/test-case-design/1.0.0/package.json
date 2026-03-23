@@ -1,6 +1,0 @@
-{
-  "name": "@test/test-case-design",
-  "version": "1.0.0",
-  "description": "测试用例设计规范：等价类、边界值、场景覆盖与用例模板",
-  "aipm": { "type": "skill" }
-}

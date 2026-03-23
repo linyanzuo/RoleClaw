@@ -1,6 +1,0 @@
-{
-  "name": "@test/automation-guide",
-  "version": "1.0.0",
-  "description": "自动化测试规范：单元测试、集成测试、E2E 与 CI 集成",
-  "aipm": { "type": "skill" }
-}

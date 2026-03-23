@@ -1,8 +1,0 @@
-{
-  "name": "@frontend/test",
-  "version": "1.0.0",
-  "description": "rule: test",
-  "aipm": {
-    "type": "rule"
-  }
-}

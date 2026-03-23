@@ -1,6 +1,0 @@
-{
-  "name": "@product/requirement-analysis",
-  "version": "1.0.0",
-  "description": "需求分析规范：用户故事、验收条件、优先级与需求拆解",
-  "aipm": { "type": "skill" }
-}

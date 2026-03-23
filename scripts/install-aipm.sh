@@ -52,9 +52,10 @@ print_next_steps() {
   echo "  aipm init          # interactive: select IDE & profile"
   echo "  aipm install       # install skills and rules"
   echo
-  echo "If project has no registry-template, set Registry path:"
+  echo "Registry (local path or remote URL):"
   echo "  AIPM_REGISTRY=/path/to/registry aipm init"
-  echo "  # or: aipm init --registry /path/to/registry"
+  echo "  AIPM_REGISTRY=https://codeup.aliyun.com/.../-/raw/master/ aipm init"
+  echo "  # or: aipm init --registry <path-or-url>"
 }
 
 main() {

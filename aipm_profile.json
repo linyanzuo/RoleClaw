@@ -1,5 +1,6 @@
 {
-  "registry": "./registry-template",
+  "registry": null,
+  "registries": [],
   "ide": "cursor",
   "skills": {},
   "rules": {},

@@ -1,8 +1,0 @@
-{
-  "name": "@test/scaffold-new",
-  "version": "1.0.0",
-  "description": "skill: scaffold-new",
-  "aipm": {
-    "type": "skill"
-  }
-}

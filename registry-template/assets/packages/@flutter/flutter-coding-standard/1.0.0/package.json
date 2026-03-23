@@ -1,6 +1,0 @@
-{
-  "name": "@flutter/flutter-coding-standard",
-  "version": "1.0.0",
-  "description": "Flutter + Dart 编码规范：组件结构、命名、状态管理、注释与代码风格",
-  "aipm": { "type": "skill" }
-}

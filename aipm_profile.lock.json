@@ -1,0 +1,23 @@
+{
+  "lockfileVersion": 1,
+  "skills": {
+    "@frontend/vue-ts-coding-standard": {
+      "version": "1.0.0",
+      "registry": "https://raw.githubusercontent.com/linyanzuo/aipm/master/"
+    },
+    "@frontend/git-workflow": {
+      "version": "1.0.0",
+      "registry": "https://raw.githubusercontent.com/linyanzuo/aipm/master/"
+    },
+    "@frontend/code-review-guide": {
+      "version": "1.0.0",
+      "registry": "https://raw.githubusercontent.com/linyanzuo/aipm/master/"
+    }
+  },
+  "rules": {
+    "@frontend/eng-rules-baseline": {
+      "version": "1.0.0",
+      "registry": "https://raw.githubusercontent.com/linyanzuo/aipm/master/"
+    }
+  }
+}

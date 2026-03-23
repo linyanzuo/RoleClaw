@@ -1,6 +1,0 @@
-{
-  "name": "@product/git-workflow",
-  "version": "1.0.0",
-  "description": "Git 工作流规范：提交信息、分支命名、PR 流程与提交流程",
-  "aipm": { "type": "skill" }
-}

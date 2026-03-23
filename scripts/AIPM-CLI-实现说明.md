@@ -1,4 +1,4 @@
-# AIPM CLI 实现说明（Step 3）
+# AIPM CLI 实现说明
 
 本文说明 `scripts/aipm.mjs` 的核心实现逻辑，方便后续维护与扩展。
 
@@ -9,13 +9,17 @@
 1. **Package 生命周期**：创建 package（init-skill/init-rule）、发布至 Registry（publish）
 2. **IDE 管理**：根据 profile 配置，确保 IDE 内安装的 package 与声明版本一致
 
+### 命令一览
+
 | 命令 | 作用 | 备注 |
 |---|---|---|
-| `install` | 按 profile 把声明的 Skills/Rules 安装到目标 IDE 目录 | Cursor -> `.cursor/`，Codex -> `.codex/` |
+| `init` | 交互式创建 aipm_profile.json | 选择 registry、IDE、profile |
+| `install` | 按 profile 把声明的 Skills/Rules 安装到目标 IDE 目录 | 支持 cursor/codex/trae/windsurf |
 | `list` | 查看声明与安装状态 | 同时展示缺失与额外安装项 |
-| `update` | 更新到最新版本 | 支持指定单个 artifact 或全部更新 |
-| `publish` | 把 IDE 中的 Skill/Rule 编辑回写到本地 Registry | **仅支持本地 Registry**，远程 URL 需直接编辑仓库并提 PR |
-| `init-skill` | 交互式创建新 Skill | 提示 name、description、version，生成 package.json、.aipm、SKILL.md |
+| `update [name]` | 更新到最新版本 | 支持指定单个 artifact 或全部更新 |
+| `use [profile-id]` | 切换配置单 | 无参数时列出可用 profile |
+| `publish [name]` | 把 IDE 中的 Skill/Rule 编辑回写到本地 Registry | **仅支持本地 Registry**，已发布版本不可覆盖 |
+| `init-skill` | 交互式创建新 Skill | 提示 name、description、version |
 | `init-rule` | 交互式创建新 Rule | 同上 |
 | `install-skill <name> [version]` | 添加 skill 到 config 并从 Registry 安装 | |
 | `install-rule <name> [version]` | 添加 rule 到 config 并从 Registry 安装 | |
@@ -24,156 +28,113 @@
 | `unpublish-skill <name>` | 从 Registry 删除 Skill | 删除 assets/packages 与 registry.json 条目 |
 | `unpublish-rule <name>` | 从 Registry 删除 Rule | 删除 assets/rules 与 registry.json 条目 |
 | `doctor` | 做可用性自检 | 失败项返回非 0 退出码 |
+| `search [query]` | 在 registry 中搜索 skills/rules | |
 
-维护约定：
+**维护约定**：新增、删除或调整 CLI 命令时，必须同步更新本表与对应说明。
 
-- 后续新增、删除或调整 CLI 命令时，必须同步更新本表与对应说明。
+---
 
-## 2) 关键设计
+## 2) 配置与 Registry
 
-### 双来源 Registry（本地/远程）
+### 配置来源（优先级）
 
-Registry 既可以是远程 URL，也可以是本地目录，便于阶段一快速迭代：
+1. **package.json** 的 `aipm` 字段（若存在）
+2. **aipm_profile.json**（项目根目录）
 
-```js
-function defaultRegistryRef() {
-  const localRegistry = join(ROOT, 'registry-template')
-  if (existsSync(localRegistry)) return './registry-template'
-  return 'https://raw.githubusercontent.com/YOUR_ORG/cursor-skills-registry/main'
-}
-```
+两者通过 `mergeConfig` 合并，后者字段覆盖前者。若两者都不存在，`readConfig()` 抛错；`readConfigOrDefault()` 返回默认配置。
 
-### 配置与配置单读取策略
-
-配置入口统一为项目根目录的 `aipm_profile.json`，配置单来源优先级如下：
-
-1. `aipm_profile.json` 的 `profiles[profileId]`
-2. `registry-template/organization/profiles/<profileId>.json`
-3. `registry-template/organization/rbac/roles.json`（兼容）
-
-```js
-async function fetchProfileConfig(baseRef, config, profileId) {
-  if (config.profiles?.[profileId]) {
-    return config.profiles[profileId]
-  }
-  try {
-    return await readJsonResource(baseRef, `organization/profiles/${profileId}.json`)
-  } catch {
-    const rbac = await fetchRbacRoles(baseRef) // organization/rbac/roles.json
-    // ... fallback 到 rbac.roles[profileId]
-  }
-}
-```
-
-### 共享与配置专属目录
-
-- **共享**：`packages/shared/<skill>/`、`rules/shared/<rule>/`，安装到 IDE 为 `<skill>`
-- **配置专属**：`packages/<profileId>/<skill>/`、`rules/<profileId>/<rule>/`，安装到 IDE 为 `<profileId>_<skill>`
-- 解析优先级：配置专属 > 共享
-
-### 安装策略（版本感知 + 覆盖式写入）
-
-每个已安装的 artifact 目录下会写入隐藏文件 `.aipm`，JSON 格式记录版本与配置单。格式约束见 `registry-template/schemas/aipm-marker.schema.json`：
+### 配置结构
 
 ```json
-{"version":"1.0.0"}
-{"version":"1.0.0","profile":"frontend-engineer"}
+{
+  "registry": null,
+  "registries": [],
+  "ide": "cursor",
+  "profile": "frontend-engineer",
+  "skills": {},
+  "rules": {}
+}
 ```
 
-安装前检查 `artifactDir` 是否存在且为目录：
+| 字段 | 说明 |
+|------|------|
+| `registry` | 单个 registry（与 registries 二选一） |
+| `registries` | registry 列表，支持多源 |
+| `ide` | 目标 IDE：cursor、codex、trae、windsurf |
+| `profile` | 配置单 ID，从 registry 的 profiles/ 加载 |
+| `skills` | 显式声明的 skills（name → version），覆盖 profile |
+| `rules` | 显式声明的 rules（name → version），覆盖 profile |
 
-- **存在 `.aipm` 且版本相同**：跳过，不重装
-- **存在 `.aipm` 且目标版本更高**：提示「有新版本，是否覆盖？」
-- **存在 `.aipm` 且目标版本更低**：提示并跳过，不覆盖
-- **存在目录但无 `.aipm`**：视为非 AIPM 安装（重名），提示「是否覆盖？」
+### Registry 顺序
 
-确认覆盖后执行：删除旧目录 → 按 `files.json` 重新写入 → 写入 `.aipm`，避免脏文件。
+`getRegistries(config)` 返回有序列表：
 
-### Skills + Rules 合并策略
+1. 项目 `registries` 或 `registry`
+2. 全局 `~/.aipm/config.json` 的 `registries`
+3. 默认仓库 `https://raw.githubusercontent.com/linyanzuo/aipm/master/`（若未包含）
 
-配置中的显式声明优先，配置单必备作为补充：
+### Registry 目录结构
+
+```
+<registry>/
+├── registry.json           # 全量索引 { packages: {}, rules: {} }
+├── profiles/               # 配置单
+│   ├── frontend-engineer.json
+│   └── ...
+└── assets/
+    ├── packages/           # Skills
+    │   └── @<scope>/<name>/<version>/
+    │       ├── package.json
+    │       ├── SKILL.md
+    │       └── ...
+    └── rules/              # Rules
+        └── @<scope>/<name>/<version>/
+            ├── package.json
+            ├── RULE.md
+            └── ...
+```
+
+包名支持 `@scope/name` 或 `name`，安装时 scope 转为 `scope_name` 以适配 IDE 目录命名。
+
+---
+
+## 3) 配置单（Profile）
+
+### 加载策略
+
+配置单从 **registry 的 `profiles/<profileId>.json`** 加载，按 `getRegistries` 顺序在第一个包含该 profile 的 registry 中查找。
+
+**不支持**在 `aipm_profile.json` 中内嵌 profile 内容；仅支持通过 `config.profile` 指定 ID，从 registry 拉取。
+
+### 合并策略
+
+`resolveDesiredArtifacts(config)`：
+
+1. 若 `config.profile` 存在，从 registry 加载 `profiles/<profileId>.json` 得到 `skills`、`rules`
+2. 用 `config.skills`、`config.rules` 覆盖/补充，显式声明优先
 
 ```js
-const skills = { ...(config.skills ?? {}) }
-const rules = { ...(config.rules ?? {}) }
-for (const [name, version] of Object.entries(profileConfig.requiredSkills)) {
-  if (!skills[name]) skills[name] = version
-}
-for (const [name, version] of Object.entries(profileConfig.requiredRules)) {
-  if (!rules[name]) rules[name] = version
-}
+skills = { ...profileSkills, ...explicitSkills }
+rules = { ...profileRules, ...explicitRules }
 ```
 
-## 3) publish：IDE 编辑回写 Registry
+---
 
-当 Registry 为**本地路径**（如 `./registry-template` 或项目内绝对路径）时，用户可在 IDE 中直接编辑 `.cursor/skills/<name>/` 或 `.cursor/rules/<name>/`，然后执行：
+## 4) 安装逻辑
 
-```bash
-aipm publish              # 回写所有已声明的 skills/rules
-aipm publish git-workflow # 仅回写指定 artifact
-```
+### 版本感知
 
-`publish` 会：
+安装前检查目标目录 `.<ide>/skills/<name>/` 或 `.<ide>/rules/<name>/`：
 
-1. 从 IDE 安装目录读取文件
-2. 按 `files.json` 规范写入 Registry 对应版本目录
-3. 自动生成/更新 `files.json`（主文件 SKILL.md/RULE.md 置前）
+- **存在 package.json 且含 aipm 字段**：
+  - 版本相同 → 跳过
+  - 已安装版本更高 → 跳过（不降级）
+  - 已安装版本更低 → 询问是否覆盖
+- **无 package.json 或缺少 aipm 字段** → 视为非 aipm 安装，询问是否覆盖
 
-完成后提示用户执行 `git add` 和 `git commit` 以持久化变更。其他伙伴通过 `git pull` + `aipm install` 即可获得更新。
+确认覆盖后：删除旧目录 → 按 `package.json.files` 重新写入。
 
-当 Registry 为远程 URL 时，`publish` 会报错并提示直接编辑仓库、提交 PR。
-
-### init-skill / init-rule：创建新 Skill/Rule
-
-交互式创建新 package，提示输入 name、description、version：
-
-```bash
-aipm init-skill   # 创建 skill，自动生成 package.json、.aipm、SKILL.md
-aipm init-rule    # 创建 rule
-```
-
-创建后编辑 SKILL.md/RULE.md，再执行 `aipm publish <name>` 发布到 Registry。
-
-### install-skill / install-rule：添加 package 并安装
-
-```bash
-aipm install-skill <name> [version]   # 添加 skill 到 config 并从 Registry 安装
-aipm install-rule <name> [version]   # 添加 rule 到 config 并从 Registry 安装
-```
-
-### uninstall-skill / uninstall-rule：从 config 和 IDE 移除
-
-```bash
-aipm uninstall-skill <name>
-aipm uninstall-rule <name>
-```
-
-会删除 IDE 目录并更新 config。
-
-### unpublish-skill / unpublish-rule：从 Registry 删除
-
-```bash
-aipm unpublish-skill <name>
-aipm unpublish-rule <name>
-```
-
-会删除 `assets/packages/<name>/` 或 `assets/rules/<name>/`，并更新 `registry.json` 与 config。
-
-## 4) 目录创建与冲突处理
-
-### 目录自动创建
-
-`install` 和 `update` 执行时，若 `.cursor/` 或 `.codex/` 不存在，会自动创建：
-
-- `.<ide>/`（如 `.cursor/`、`.codex/`）
-- `.<ide>/skills/`
-- `.<ide>/rules/`
-
-`init` 仅创建 `aipm_profile.json`，不创建 IDE 目录；首次安装需执行 `aipm install`。
-
-### 文件冲突处理
-
-当目标路径已存在（文件或非目录）时，支持：
+### 冲突处理
 
 | 选项 | 说明 |
 |------|------|
@@ -181,22 +142,122 @@ aipm unpublish-rule <name>
 | `--on-conflict=skip` | 跳过冲突项 |
 | `--on-conflict=overwrite` | 强制覆盖 |
 
-非交互环境（CI/管道）下若遇冲突且未指定 `--on-conflict`，会报错并提示使用 `skip` 或 `overwrite`。
+非交互环境遇冲突且未指定时，报错并提示使用 `skip` 或 `overwrite`。
 
-## 5) doctor 的检查层次
+### Profile 切换时的清理
 
-`doctor` 从外到内检查三层：
+当 `config.profile` 存在时，`install` 会移除**不在当前 profile 中**且**由 aipm 安装**的 artifact。显式声明的 `config.skills`/`config.rules` 会保留。
 
-1. 配置层：`aipm_profile.json` / registry / profile 是否可读
-2. 索引层：registry 中是否存在目标 skill/rule 版本
-3. 本地层：`.<ide>/skills/<name>/SKILL.md` 与 `.<ide>/rules/<name>/RULE.md` 是否存在
+### Lock 文件
 
-只要有失败项，命令会以非 0 退出，方便接入 CI 或脚本化验收。
+`aipm_profile.lock.json` 记录已解析的 version 与 registry，保证可复现安装。格式：
 
-## 6) 维护建议
+```json
+{
+  "lockfileVersion": 1,
+  "skills": { "@frontend/git-workflow": { "version": "1.0.0", "registry": "..." } },
+  "rules": { ... }
+}
+```
 
-- 继续保持 `SKILL.md` 仅包含 AI 运行时最小信息
-- `RULE.md` 同样保持最小运行时信息，不混入治理字段
-- 元数据扩展优先加在 `registry.json` / `organization/profiles/*.json`
-- 新增命令时先补 `doctor` 对应检查项，避免功能可用但不可诊断
-- 命令行为变更后，同步更新“核心命令表”和示例代码片段
+---
+
+## 5) IDE 支持
+
+### 配置方式
+
+通过 `IDE_DIR_MAP` 映射 IDE 标识到项目内目录：
+
+| IDE | 根目录 | skills | rules |
+|-----|--------|--------|-------|
+| cursor | `.cursor` | `.cursor/skills/` | `.cursor/rules/` |
+| codex | `.codex` | `.codex/skills/` | `.codex/rules/` |
+| trae | `.trae` | `.trae/skills/` | `.trae/rules/` |
+| windsurf | `.windsurf` | `.windsurf/skills/` | `.windsurf/rules/` |
+
+新增 IDE：在 `IDE_DIR_MAP` 中添加 `ide: '.ide'` 即可，前提是该 IDE 使用 `skills/`、`rules/` 子目录结构。
+
+### 目录自动创建
+
+`install`、`update` 执行时，若 IDE 根目录不存在，会自动创建 `.<ide>/`、`.<ide>/skills/`、`.<ide>/rules/`。
+
+---
+
+## 6) publish：IDE 回写 Registry
+
+### 前置条件
+
+- Registry 必须为**本地路径**（远程 URL 不支持 publish）
+- 目标版本**未在 registry 中发布**（已发布版本不可覆盖）
+
+### 版本来源
+
+publish 使用的 version 来自：`config.skills[packageName]` 或 `config.rules[packageName]` 或 profile，**不是**从已安装 artifact 的 `package.json` 读取。若本地修改了 version，需同步更新 config 或 profile。
+
+### 流程
+
+1. 从 IDE 安装目录读取文件
+2. 校验目标版本是否已在 registry 的 `versions` 中，若已存在则拒绝
+3. 写入 `assets/packages/<path>/<version>/` 或 `assets/rules/<path>/<version>/`
+4. 更新 `registry.json` 的 `versions`、`latest`
+5. 更新 `aipm_profile.json` 的 skills/rules
+
+### init-skill / init-rule
+
+交互式创建，生成 `package.json`、`SKILL.md`/`RULE.md`。创建后编辑内容，再执行 `aipm publish <name>` 发布。
+
+---
+
+## 7) doctor 检查层次
+
+从外到内检查三层：
+
+1. **配置层**：aipm_profile.json / registry / profile 是否可读
+2. **索引层**：registry 中是否存在目标 skill/rule 版本
+3. **本地层**：`.<ide>/skills/<name>/SKILL.md`、`.<ide>/rules/<name>/RULE.md` 是否存在
+
+有失败项时以非 0 退出，便于 CI 或脚本验收。
+
+---
+
+## 8) 当前缺陷与限制
+
+### 高优先级
+
+| 缺陷 | 说明 |
+|------|------|
+| **publish 版本来源** | version 来自 config/profile，不读取已安装 artifact 的 package.json。本地修改 version 后需手动同步 config。 |
+| **无 aipm diff** | 无法在 update 前对比本地与远程目标版本的差异（Registry与版本管理方案 Step V1 未实现）。 |
+| **无 update --preview** | 无法在 update 前预览变更（Registry与版本管理方案 Step V2 未实现）。 |
+
+### 中优先级
+
+| 缺陷 | 说明 |
+|------|------|
+| **Profile 不可内嵌** | 无法在 aipm_profile.json 中直接定义 profile 内容，必须依赖 registry 的 profiles/。离线或私有场景不便。 |
+| **Windsurf Rules 格式** | Windsurf 期望 `.windsurf/rules/*.md`（单文件），当前安装为 `.<ide>/rules/<name>/RULE.md`（目录）。部分 IDE 可能需额外适配。 |
+| **init 时 profile 仅本地** | `listAvailableProfiles` 仅扫描本地 registry，init 时若 registry 为远程 URL，无法列出 profile 供选择。 |
+
+### 低优先级
+
+| 缺陷 | 说明 |
+|------|------|
+| **无 registry.json 校验** | publish 未对 registry.json 做 schema 校验，错误结构可能导致异常。 |
+| **aipm use 清空显式声明** | `aipm use <profile>` 会清空 `config.skills`、`config.rules`，之前的显式覆盖会丢失。 |
+| **Help 中 ide 列表硬编码** | `ide` 说明为 `cursor|codex|trae|windsurf`，新增 IDE 时需手动更新，可改为 `Object.keys(IDE_DIR_MAP).join('|')`。 |
+
+### 设计取舍（非缺陷）
+
+| 项目 | 说明 |
+|------|------|
+| **远程 Registry 不可 publish** | 设计如此，远程场景需直接编辑仓库并提 PR。 |
+| **已发布版本不可覆盖** | 符合「已发布不可变」约定，需发新版本才能更新。 |
+
+---
+
+## 9) 维护建议
+
+- 保持 `SKILL.md`、`RULE.md` 仅包含 AI 运行时最小信息
+- 元数据扩展优先放在 `registry.json`、`profiles/*.json`
+- 新增命令时同步补充 `doctor` 对应检查项
+- 命令行为变更后，同步更新本表与示例

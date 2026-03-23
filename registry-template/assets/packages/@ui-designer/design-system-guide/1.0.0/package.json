@@ -1,6 +1,0 @@
-{
-  "name": "@ui-designer/design-system-guide",
-  "version": "1.0.0",
-  "description": "设计系统规范：色彩、字体、间距、组件规范与设计 Token",
-  "aipm": { "type": "skill" }
-}

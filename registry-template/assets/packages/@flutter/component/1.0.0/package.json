@@ -1,8 +1,0 @@
-{
-  "name": "@flutter/component",
-  "version": "1.0.0",
-  "description": "维护并扩展当前仓库中的 CP Flutter 组件体系。",
-  "aipm": {
-    "type": "skill"
-  }
-}

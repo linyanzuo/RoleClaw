@@ -12,14 +12,14 @@
 
 #### 目标
 
-将 `registry-template` 从 RoleClaw 主仓拆出，作为独立 Git 仓库，便于单独部署与访问。
+将 registry 从 RoleClaw 主仓拆出，作为独立 Git 仓库（linyanzuo/aipm），便于单独部署与访问。
 
 #### 任务
 
 1. 新建 Git 仓库（如 `roleclaw-registry` 或 `aipm-registry`）。
-2. 将 `registry-template/` 目录内容作为新仓库根目录（即 `registry.json`、`profiles/`、`assets/` 等在根下）。
+2. 将 registry 内容作为新仓库根目录（即 `registry.json`、`profiles/`、`assets/` 等在根下）。
 3. 在 RoleClaw 主仓中：
-   - 删除或保留 `registry-template/` 作为开发用本地副本（可选）；
+   - 已移除 `registry-template/`，使用远程仓库 + bundle 缓存；
    - 更新 README，说明生产环境使用远程 registry URL。
 
 #### 完成标准
@@ -85,7 +85,7 @@ aipm 支持通过 URL 拉取 registry，成员无需拉取主仓代码。
    - 无参数：对比当前 profile 下所有 skills/rules
    - 有参数：对比指定 name 的 skill 或 rule
 2. 逻辑：
-   - 读取本地已安装版本（`.aipm` 中的 version）
+   - 读取本地已安装版本（package.json 中的 version）
    - 从 config 获取目标版本（profile 或显式配置）
    - 若本地版本与目标版本相同，输出 "up-to-date"
    - 若不同，拉取远程目标版本的文件内容，与本地做文本 diff
@@ -150,7 +150,7 @@ aipm 支持通过 URL 拉取 registry，成员无需拉取主仓代码。
 
 1. 新增 `aipm publish <name> [version]` 或集成到现有 publish：
    - 校验 SKILL.md / RULE.md 的 frontmatter（name、description 必填）
-   - 校验 files.json 与目录内文件一致
+   - 校验 package.json 的 files 数组与目录内文件一致
    - 校验 package.json 的 name、version 与目录匹配
 2. 校验失败时输出错误并中止，不执行 publish。
 3. 若 registry 为远程 URL，publish 可能仅做本地校验，实际发布仍通过 Git push 到 registry 仓库。（此处 push 指 git push）
