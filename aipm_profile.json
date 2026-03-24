@@ -1,7 +1,6 @@
 {
-  "registry": null,
+  "registry": "http://localhost:9005/",
   "registries": [],
-  "ide": "cursor",
   "skills": {},
   "rules": {},
   "profile": "frontend-engineer"

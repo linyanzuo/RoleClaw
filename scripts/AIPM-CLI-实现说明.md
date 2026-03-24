@@ -18,7 +18,7 @@
 | `list` | 查看声明与安装状态 | 同时展示缺失与额外安装项 |
 | `update [name]` | 更新到最新版本 | 支持指定单个 artifact 或全部更新 |
 | `use [profile-id]` | 切换配置单 | 无参数时列出可用 profile |
-| `publish [name]` | 把 IDE 中的 Skill/Rule 编辑回写到本地 Registry | **仅支持本地 Registry**，已发布版本不可覆盖 |
+| `publish [name]` | 把 IDE 中的 Skill/Rule 回写到 Registry | **本地路径**直接写盘；**HTTP（aipm-registry）** 使用 **tgz + multipart** 上传，已发布版本不可覆盖 |
 | `init-skill` | 交互式创建新 Skill | 提示 name、description、version |
 | `init-rule` | 交互式创建新 Rule | 同上 |
 | `install-skill <name> [version]` | 添加 skill 到 config 并从 Registry 安装 | |
@@ -71,7 +71,7 @@
 
 1. 项目 `registries` 或 `registry`
 2. 全局 `~/.aipm/config.json` 的 `registries`
-3. 默认仓库 `https://raw.githubusercontent.com/linyanzuo/aipm/master/`（若未包含）
+3. 默认仓库 `http://localhost:9005/`（aipm-registry；若未包含在列表中则自动追加）
 
 ### Registry 目录结构
 
@@ -187,7 +187,8 @@ rules = { ...profileRules, ...explicitRules }
 
 ### 前置条件
 
-- Registry 必须为**本地路径**（远程 URL 不支持 publish）
+- **本地 Registry**：目标为磁盘路径时直接写入 `assets/` 与 `registry.json`
+- **远程 Registry（HTTP）**：目标为 **aipm-registry** 等已实现 `POST /api/publish` 的服务时，客户端在临时目录组装文件后 **`tar -czf` 打包**，以 **multipart** 上传：`manifest`（JSON，含 `filesSha256`）+ `artifact`（`.tgz`）。需本机 PATH 中有 **`tar`**（Windows 10+ 自带 `tar.exe`）
 - 目标版本**未在 registry 中发布**（已发布版本不可覆盖）
 
 ### 版本来源
@@ -196,11 +197,12 @@ publish 使用的 version 来自：`config.skills[packageName]` 或 `config.rule
 
 ### 流程
 
-1. 从 IDE 安装目录读取文件
-2. 校验目标版本是否已在 registry 的 `versions` 中，若已存在则拒绝
-3. 写入 `assets/packages/<path>/<version>/` 或 `assets/rules/<path>/<version>/`
-4. 更新 `registry.json` 的 `versions`、`latest`
-5. 更新 `aipm_profile.json` 的 skills/rules
+1. **校验**：frontmatter（name、description 必填）、package.json（name、version、files 与目录一致）
+2. 从 IDE 安装目录读取文件（并规范化 `package.json` 的 `files` 列表）
+3. **远程**：写入临时目录 → `tar -czf` → `POST /api/publish`（服务端 gunzip + 解压并校验 SHA-256、`package.json`、marker）
+4. **本地**：写入 `assets/packages/<path>/<version>/` 或 `assets/rules/<path>/<version>/`
+5. 更新 `registry.json` 的 `versions`、`latest`
+6. 更新 `aipm_profile.json` 的 skills/rules
 
 ### init-skill / init-rule
 
@@ -227,8 +229,8 @@ publish 使用的 version 来自：`config.skills[packageName]` 或 `config.rule
 | 缺陷 | 说明 |
 |------|------|
 | **publish 版本来源** | version 来自 config/profile，不读取已安装 artifact 的 package.json。本地修改 version 后需手动同步 config。 |
-| **无 aipm diff** | 无法在 update 前对比本地与远程目标版本的差异（Registry与版本管理方案 Step V1 未实现）。 |
-| **无 update --preview** | 无法在 update 前预览变更（Registry与版本管理方案 Step V2 未实现）。 |
+| **无 aipm diff** | 无法在 update 前对比本地与远程目标版本的差异（见 TODO.md）。 |
+| **无 update --preview** | 无法在 update 前预览变更（见 TODO.md）。 |
 
 ### 中优先级
 
@@ -250,7 +252,7 @@ publish 使用的 version 来自：`config.skills[packageName]` 或 `config.rule
 
 | 项目 | 说明 |
 |------|------|
-| **远程 Registry 不可 publish** | 设计如此，远程场景需直接编辑仓库并提 PR。 |
+| **非 aipm-registry 的远程 URL** | 仅支持实现了兼容 `POST /api/publish` 的服务；其它 URL 需本地 registry 或自建网关。 |
 | **已发布版本不可覆盖** | 符合「已发布不可变」约定，需发新版本才能更新。 |
 
 ---

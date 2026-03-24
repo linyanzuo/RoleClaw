@@ -12,7 +12,7 @@
 
 #### 目标
 
-将 registry 从 RoleClaw 主仓拆出，作为独立 Git 仓库（linyanzuo/aipm），便于单独部署与访问。
+将 registry 从 RoleClaw 主仓拆出，作为独立仓库（Git 或仅 HTTP 数据目录），便于单独部署与访问。
 
 #### 任务
 
@@ -37,12 +37,11 @@ aipm 支持通过 URL 拉取 registry，成员无需拉取主仓代码。
 
 #### 任务
 
-1. 确定 raw 服务地址，例如：
-   - GitHub: `https://raw.githubusercontent.com/<org>/<repo>/<branch>/`
-   - GitLab: `https://gitlab.com/<org>/<repo>/-/raw/<branch>/`
-   - 自建静态服务或 OSS 根路径
-2. 在 `aipm init` 时，若选择远程 registry，写入上述 URL 到 `aipm_profile.json`。
-3. 更新 `scripts/install-aipm.sh` 及文档，说明 `AIPM_REGISTRY` 环境变量用法。
+1. 确定 Registry 基地址，例如：
+   - **推荐**：自建 **aipm-registry**（HTTP），如 `http://localhost:9005/` 或内网 `https://registry.example.com/`
+   - 其它：任意可 GET `registry.json`、`profiles/`、`assets/` 的 HTTP 根路径（如 Git 平台的 raw URL、OSS 静态站等）
+2. 在 `aipm init` 时，可通过 `--registry <url>` 指定远程 URL，写入 `aipm_profile.json`。
+3. Registry 来源（优先级）：**项目配置** > **全局配置**（~/.aipm/config.json）> **默认远程**（代码固定）。`AIPM_REGISTRY` 环境变量已废弃。
 4. 验证：配置远程 URL 后执行 `aipm install`，能正确拉取 packages。
 
 #### 完成标准
@@ -52,21 +51,52 @@ aipm 支持通过 URL 拉取 registry，成员无需拉取主仓代码。
 
 ---
 
-### Step R3：Registry 同步与发布流程（可选）
+### Step R3：Registry 同步与发布流程
 
 #### 目标
 
 明确「谁改 registry、如何发布到远程」。
 
-#### 任务
+#### aipm-registry（HTTP 服务）
 
-1. 约定流程：岗位负责人/管理员在本地或通过 PR 修改 registry 仓库，合并后自动/手动触发发布。
-2. 若用 GitHub：可配置 GitHub Actions，在 push 到 main 后自动同步到 CDN 或触发缓存刷新（如有需要）。
-3. 文档化：在 registry 仓库 README 中说明提交规范、发布流程。
+Docker 仓库标准部署见 **`/Users/zed/Developer/Docker/aipm-registry`**（端口 **9005**），支持 **install**（GET 静态文件）和 **publish**（POST /api/publish）：
+
+```bash
+cd /Users/zed/Developer/Docker/aipm-registry
+docker compose up -d --build
+```
+
+配置 `registry: "http://localhost:9005/"` 后，`aipm install` 与 `aipm publish` 均可针对该 URL。publish 需 Bearer token 时，在 `.env` 中设置 `REGISTRY_TOKEN`，客户端使用 `aipm set-token` 或 `AIPM_REGISTRY_TOKEN`。
+
+#### 流程说明
+
+**1. 修改 Registry**
+
+- **岗位负责人 / 管理员**：在本地 clone registry 仓库，或 fork 后提 PR
+- **本地修改**：在 IDE 中编辑 `.cursor/skills/<name>/` 或 `.cursor/rules/<name>/`，执行 `aipm publish [name] --registry <本地-registry-路径>`
+- **或直接编辑**：在 registry 仓库中直接修改 `assets/packages/`、`assets/rules/`、`profiles/`、`registry.json`
+
+**2. 发布到远程**
+
+- **Git push**：将修改 push 到 registry 仓库的 main/master 分支
+- **生效方式**：若仍用 Git 托管 registry 文件，push 后通过对应 raw/静态 URL 生效；若用 **aipm-registry**，`publish` 写入容器数据卷后 **install 立即生效**（或配合反代与持久化存储）
+- **缓存**：aipm 使用 `~/.aipm/cache` 缓存远程内容，同版本不重复请求；若需强制刷新，可清空 cache 或等待版本变更
+
+**3. 可选：CI 自动化**
+
+- 若用 Git 托管：可配置 CI，push 后同步到静态托管或触发缓存刷新
+- 若用 aipm-registry：以容器数据卷或挂载存储为单一事实来源，备份与发布流程在运维侧约定即可
+
+**4. 提交规范**
+
+- 在 registry 仓库 README 或 CONTRIBUTING.md 中说明：
+  - 新增 package：需包含 `package.json`、`SKILL.md`/`RULE.md`，并在 `registry.json` 中登记
+  - 版本更新：已发布版本不可覆盖，需 bump 版本号后发布新版本
+  - profile 变更：修改 `profiles/<id>.json` 并确保引用存在
 
 #### 完成标准
 
-- 有明确的「修改 → 合并 → 生效」流程说明
+- 有明确的「修改 → push → 生效」流程说明
 - 成员通过 `aipm install` 能获取到最新内容（依赖 raw 或 CDN 的缓存策略）
 
 ---

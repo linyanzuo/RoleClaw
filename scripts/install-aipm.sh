@@ -52,10 +52,8 @@ print_next_steps() {
   echo "  aipm init          # interactive: select IDE & profile"
   echo "  aipm install       # install skills and rules"
   echo
-  echo "Registry (local path or remote URL):"
-  echo "  AIPM_REGISTRY=/path/to/registry aipm init"
-  echo "  AIPM_REGISTRY=https://codeup.aliyun.com/.../-/raw/master/ aipm init"
-  echo "  # or: aipm init --registry <path-or-url>"
+  echo "Registry: 默认远程 / 全局配置(~/.aipm) / 项目配置(aipm_profile.json)"
+  echo "  aipm init --registry <path-or-url>   # 指定 registry"
 }
 
 main() {

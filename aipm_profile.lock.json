@@ -3,21 +3,21 @@
   "skills": {
     "@frontend/vue-ts-coding-standard": {
       "version": "1.0.0",
-      "registry": "https://raw.githubusercontent.com/linyanzuo/aipm/master/"
+      "registry": "http://localhost:9005/"
     },
     "@frontend/git-workflow": {
       "version": "1.0.0",
-      "registry": "https://raw.githubusercontent.com/linyanzuo/aipm/master/"
+      "registry": "http://localhost:9005/"
     },
     "@frontend/code-review-guide": {
       "version": "1.0.0",
-      "registry": "https://raw.githubusercontent.com/linyanzuo/aipm/master/"
+      "registry": "http://localhost:9005/"
     }
   },
   "rules": {
     "@frontend/eng-rules-baseline": {
       "version": "1.0.0",
-      "registry": "https://raw.githubusercontent.com/linyanzuo/aipm/master/"
+      "registry": "http://localhost:9005/"
     }
   }
 }

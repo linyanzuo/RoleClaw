@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 
+import { spawnSync } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import {
   chmodSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'fs'
-import { createHash } from 'crypto'
-import { homedir } from 'os'
+import { createHash, randomBytes } from 'crypto'
+import { homedir, tmpdir } from 'os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -100,6 +102,8 @@ const ROOT = process.cwd()
 const SCRIPT_FILE = fileURLToPath(import.meta.url)
 const TOOL_ROOT = resolve(dirname(SCRIPT_FILE), '..')
 const AIPM_DIR = join(ROOT, '.aipm')
+/** 本机 IDE 等不随仓库同步的配置（建议在 .gitignore 中忽略 .aipm/） */
+const LOCAL_IDE_PROFILE_FILE = join(AIPM_DIR, 'profile.json')
 const USER_CONFIG_DIR = join(homedir(), '.aipm')
 const USER_CONFIG_FILE = join(USER_CONFIG_DIR, 'config.json')
 const BUNDLE_CACHE_DIR = join(USER_CONFIG_DIR, 'cache')
@@ -147,11 +151,10 @@ function getRegistryToken() {
   }
 }
 
-/** Append registry token to URL for private Codeup repos (fallback). Skip for GitHub raw (public). */
+/** 为支持 query token 的私有 HTTP 源追加 token（GET 拉取用）。已含 token= / private_token= 则不改。 */
 function appendRegistryToken(url) {
   const token = getRegistryToken()
   if (!token || url.includes('token=') || url.includes('private_token=')) return url
-  if (url.includes('raw.githubusercontent.com')) return url
   const sep = url.includes('?') ? '&' : '?'
   return `${url}${sep}token=${encodeURIComponent(token)}`
 }
@@ -175,6 +178,54 @@ function writeToBundleCache(baseRef, relativePath, content, isJson = false) {
   writeFileSync(cachePath, isJson ? JSON.stringify(content, null, 0) : content, 'utf-8')
 }
 
+/** 远程 publish 打包上限（tar 子进程 stdout） */
+const PUBLISH_TGZ_MAX_BUFFER = 48 * 1024 * 1024
+
+/** 在 dirAbs 下将 relativePaths 打成 gzip tar（需系统 tar，Windows 10+ 自带）。 */
+function packArtifactTarGz(dirAbs, relativePaths) {
+  const sorted = [...relativePaths].sort()
+  if (!sorted.length) {
+    throw new Error('No files to pack')
+  }
+  const r = spawnSync('tar', ['-czf', '-', '-C', dirAbs, ...sorted], {
+    maxBuffer: PUBLISH_TGZ_MAX_BUFFER,
+    encoding: 'buffer',
+    windowsHide: true,
+  })
+  if (r.error) {
+    throw new Error(
+      `${r.error.message} Run publish on a system with tar in PATH (Windows 10+ includes tar.exe).`,
+    )
+  }
+  if (r.status !== 0) {
+    const errText = r.stderr?.toString() || r.stdout?.toString() || `exit ${r.status}`
+    throw new Error(`tar pack failed: ${errText}`)
+  }
+  return r.stdout
+}
+
+/**
+ * 手动构造 multipart/form-data，避免 Node fetch + FormData/Blob/File 与 multer 不兼容或触发 ExperimentalWarning。
+ */
+function encodeMultipartPublish(manifestJson, tarGzBuffer) {
+  const boundary = `----aipmPublish${randomBytes(16).toString('hex')}`
+  const crlf = '\r\n'
+  const buf = Buffer.isBuffer(tarGzBuffer) ? tarGzBuffer : Buffer.from(tarGzBuffer)
+  const head1 = Buffer.from(
+    `--${boundary}${crlf}Content-Disposition: form-data; name="manifest"${crlf}${crlf}${manifestJson}${crlf}`,
+    'utf8',
+  )
+  const head2 = Buffer.from(
+    `--${boundary}${crlf}Content-Disposition: form-data; name="artifact"; filename="artifact.tgz"${crlf}Content-Type: application/gzip${crlf}${crlf}`,
+    'utf8',
+  )
+  const tail = Buffer.from(`${crlf}--${boundary}--${crlf}`, 'utf8')
+  return {
+    contentType: `multipart/form-data; boundary=${boundary}`,
+    body: Buffer.concat([head1, head2, buf, tail]),
+  }
+}
+
 function resolveLocalBase(baseRef) {
   return isAbsolute(baseRef) ? baseRef : resolve(ROOT, baseRef)
 }
@@ -185,8 +236,8 @@ function resolveRegistryRef(ref) {
   return ref
 }
 
-/** 默认仓库：aipm 专属远程服务，代码固定，不允许用户自定义。 */
-const DEFAULT_REGISTRY_URL = 'https://raw.githubusercontent.com/linyanzuo/aipm/master/'
+/** 默认仓库：本地 aipm-registry（Docker 映射宿主机 9005）。未启动服务时 install 会失败，可改用项目/全局 registry 覆盖。 */
+const DEFAULT_REGISTRY_URL = 'http://localhost:9005/'
 
 function defaultRegistryRef() {
   return DEFAULT_REGISTRY_URL
@@ -206,7 +257,6 @@ function defaultConfig() {
   return {
     registry: null,
     registries: null,
-    ide: 'cursor',
     skills: {},
     rules: {},
   }
@@ -214,13 +264,21 @@ function defaultConfig() {
 
 /**
  * 返回有序 registry 列表。顺序：项目自定义 → 全局自定义 → 默认仓库。
- * - 默认仓库：aipm 专属，代码固定，不可配置
+ * - 默认仓库：http://localhost:9005/（aipm-registry，与 DEFAULT_REGISTRY_URL 一致）
  * - 全局自定义：~/.aipm/config.json 的 registries，所有项目共享
  * - 项目自定义：aipm_profile.json 的 registry/registries，仅当前项目生效
  */
 function getRegistries(config) {
-  const projectRegistries = config.registries ?? (config.registry ? [config.registry] : [])
-  const projectList = Array.isArray(projectRegistries) ? projectRegistries : [projectRegistries]
+  /** registries 显式为 [] 时仍应回退到单独的 registry 字段（否则仅写 registry 会被忽略）。 */
+  let projectList = []
+  const multi = config.registries
+  if (multi != null) {
+    const asArray = Array.isArray(multi) ? multi : [multi]
+    projectList = asArray.filter(Boolean)
+  }
+  if (!projectList.length && config.registry) {
+    projectList = [config.registry]
+  }
   const globalCfg = readGlobalConfig()
   const globalList = Array.isArray(globalCfg?.registries) ? globalCfg.registries : []
   const combined = [...projectList.filter(Boolean), ...globalList.filter(Boolean)]
@@ -229,14 +287,13 @@ function getRegistries(config) {
   return [...combined, defaultRef]
 }
 
-/** 默认 publish 目标：第一个本地 registry，若无则 null。 */
+/** 默认 publish 目标：第一个可用的 registry（本地路径存在 或 HTTP URL）。 */
 function getDefaultPublishRegistry(config) {
   for (const ref of getRegistries(config)) {
     const resolved = resolveRegistryRef(ref)
-    if (!isUrl(resolved)) {
-      const abs = resolveLocalBase(ref)
-      if (existsSync(abs)) return resolved
-    }
+    if (isUrl(resolved)) return resolved
+    const abs = resolveLocalBase(ref)
+    if (existsSync(abs)) return resolved
   }
   return null
 }
@@ -254,18 +311,14 @@ function getSourceRegistryFromPackage(ideDir) {
   }
 }
 
-/** 解析 publish 目标：--registry > package.sourceRegistry > 默认。 */
+/** 解析 publish 目标：--registry > package.sourceRegistry > 默认。支持本地路径或 HTTP URL。 */
 function resolvePublishTarget(config, ideDir, registryOverride) {
   if (registryOverride) {
-    const resolved = resolveRegistryRef(registryOverride)
-    if (isUrl(resolved)) throw new Error('--registry must be a local path for publish')
-    return resolved
+    return resolveRegistryRef(registryOverride)
   }
   const src = getSourceRegistryFromPackage(ideDir)
   if (src === 'default') return getDefaultPublishRegistry(config)
-  const resolved = resolveRegistryRef(src)
-  if (isUrl(resolved)) throw new Error(`sourceRegistry "${src}" is remote; use --registry <local-path> to override`)
-  return resolved
+  return resolveRegistryRef(src)
 }
 
 function getConfigFilePath() {
@@ -306,8 +359,14 @@ function ensureIdeDirs(paths) {
   mkdirSync(ruleInstallDir, { recursive: true })
 }
 
+/** 写入可同步的 aipm_profile.json（不含 ide）；ide 写入 .aipm/profile.json */
 function writeConfig(data) {
-  writeFileSync(PROFILE_CONFIG_FILE, JSON.stringify(data, null, 2) + '\n', 'utf-8')
+  const { ide, ...rest } = data
+  writeFileSync(PROFILE_CONFIG_FILE, JSON.stringify(rest, null, 2) + '\n', 'utf-8')
+  if (ide !== undefined && ide !== null && String(ide).trim() !== '') {
+    const k = normalizeIdeKey(String(ide).trim())
+    if (k) writeLocalIdeProfile({ ide: k })
+  }
 }
 
 const LOCKFILE_VERSION = 1
@@ -381,35 +440,17 @@ async function resolveArtifactWithLock(lock, registries, packageName, kind, requ
 
 /** Read config from package.json aipm or aipm_profile.json (project root). */
 function readConfig() {
-  if (existsSync(PACKAGE_JSON)) {
-    try {
-      const pkg = JSON.parse(readFileSync(PACKAGE_JSON, 'utf-8'))
-      if (pkg.aipm && typeof pkg.aipm === 'object') {
-        return mergeConfig(defaultConfig(), pkg.aipm)
-      }
-    } catch {}
+  const merged = mergeProjectConfigFromFiles()
+  if (!merged) {
+    throw new Error('aipm config not found. Add "aipm" to package.json or run: aipm init')
   }
-  const configPath = getConfigFilePath()
-  if (existsSync(configPath)) {
-    return mergeConfig(defaultConfig(), JSON.parse(readFileSync(configPath, 'utf-8')))
-  }
-  throw new Error('aipm config not found. Add "aipm" to package.json or run: aipm init')
+  return finalizeConfigWithIde(merged)
 }
 
 function readConfigOrDefault() {
-  if (existsSync(PACKAGE_JSON)) {
-    try {
-      const pkg = JSON.parse(readFileSync(PACKAGE_JSON, 'utf-8'))
-      if (pkg.aipm && typeof pkg.aipm === 'object') {
-        return mergeConfig(defaultConfig(), pkg.aipm)
-      }
-    } catch {}
-  }
-  const configPath = getConfigFilePath()
-  if (existsSync(configPath)) {
-    return mergeConfig(defaultConfig(), JSON.parse(readFileSync(configPath, 'utf-8')))
-  }
-  return defaultConfig()
+  const merged = mergeProjectConfigFromFiles()
+  if (!merged) return finalizeConfigWithIde(defaultConfig())
+  return finalizeConfigWithIde(merged)
 }
 
 function mergeConfig(base, overrides) {
@@ -417,11 +458,140 @@ function mergeConfig(base, overrides) {
     ...base,
     registry: overrides.registry ?? base.registry,
     registries: overrides.registries ?? base.registries,
-    ide: overrides.ide ?? base.ide,
     profile: overrides.profile ?? base.profile,
     skills: { ...(base.skills ?? {}), ...(overrides.skills ?? {}) },
     rules: { ...(base.rules ?? {}), ...(overrides.rules ?? {}) },
   }
+}
+
+/** 从可同步对象中去掉 ide（ide 只应存在于 .aipm/profile.json） */
+function stripIdeFromObject(obj) {
+  if (!obj || typeof obj !== 'object') return {}
+  const { ide: _drop, ...rest } = obj
+  return rest
+}
+
+function readLocalIdeProfile() {
+  if (!existsSync(LOCAL_IDE_PROFILE_FILE)) return {}
+  try {
+    const j = JSON.parse(readFileSync(LOCAL_IDE_PROFILE_FILE, 'utf-8'))
+    return j && typeof j === 'object' && !Array.isArray(j) ? j : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeLocalIdeProfile(patch) {
+  mkdirSync(AIPM_DIR, { recursive: true })
+  const prev = readLocalIdeProfile()
+  const next = { ...prev, ...patch }
+  writeFileSync(LOCAL_IDE_PROFILE_FILE, JSON.stringify(next, null, 2) + '\n', 'utf-8')
+}
+
+function normalizeIdeKey(value) {
+  if (value === undefined || value === null) return null
+  const k = String(value).trim().toLowerCase()
+  return IDE_DIR_MAP[k] ? k : null
+}
+
+/** 从 aipm_profile.json 删除 ide 字段（迁移到 .aipm/profile.json 后调用） */
+function stripIdeFromSharedProfileFile() {
+  if (!existsSync(PROFILE_CONFIG_FILE)) return
+  try {
+    const o = JSON.parse(readFileSync(PROFILE_CONFIG_FILE, 'utf-8'))
+    if (!('ide' in o)) return
+    delete o.ide
+    writeFileSync(PROFILE_CONFIG_FILE, JSON.stringify(o, null, 2) + '\n', 'utf-8')
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 仅从磁盘读取「旧版」同步文件中的 ide，供首次选择 IDE 时作默认项（不经过 strip） */
+function peekIdeFromSharedFiles() {
+  if (existsSync(PROFILE_CONFIG_FILE)) {
+    try {
+      const n = normalizeIdeKey(JSON.parse(readFileSync(PROFILE_CONFIG_FILE, 'utf-8'))?.ide)
+      if (n) return n
+    } catch {}
+  }
+  if (existsSync(PACKAGE_JSON)) {
+    try {
+      const n = normalizeIdeKey(JSON.parse(readFileSync(PACKAGE_JSON, 'utf-8'))?.aipm?.ide)
+      if (n) return n
+    } catch {}
+  }
+  return null
+}
+
+function mergeProjectConfigFromFiles() {
+  if (existsSync(PACKAGE_JSON)) {
+    try {
+      const pkg = JSON.parse(readFileSync(PACKAGE_JSON, 'utf-8'))
+      if (pkg.aipm && typeof pkg.aipm === 'object') {
+        return mergeConfig(defaultConfig(), stripIdeFromObject(pkg.aipm))
+      }
+    } catch {}
+  }
+  if (existsSync(PROFILE_CONFIG_FILE)) {
+    try {
+      const raw = JSON.parse(readFileSync(PROFILE_CONFIG_FILE, 'utf-8'))
+      return mergeConfig(defaultConfig(), stripIdeFromObject(raw))
+    } catch {}
+  }
+  return null
+}
+
+/** 合并共享配置与本地 .aipm/profile.json 中的 ide */
+function finalizeConfigWithIde(sharedMerged) {
+  const local = readLocalIdeProfile()
+  const ide = normalizeIdeKey(local.ide) ?? 'cursor'
+  return { ...sharedMerged, ide }
+}
+
+function parseIdeCliArg(args = []) {
+  const eq = args.find((a) => a.startsWith('--ide='))
+  if (eq) return normalizeIdeKey(eq.slice('--ide='.length))
+  const i = args.indexOf('--ide')
+  if (i >= 0 && args[i + 1] && !args[i + 1].startsWith('--')) {
+    return normalizeIdeKey(args[i + 1])
+  }
+  return null
+}
+
+/**
+ * 在使用需安装路径的命令前调用：若无 .aipm/profile.json 中的 ide，则 --ide 或交互选择，并写入本地文件、从 aipm_profile.json 去掉 ide。
+ */
+async function ensureLocalIdeConfigured(args = []) {
+  const local = readLocalIdeProfile()
+  if (normalizeIdeKey(local.ide)) return
+
+  const fromFlag = parseIdeCliArg(args)
+  if (fromFlag) {
+    writeLocalIdeProfile({ ide: fromFlag })
+    stripIdeFromSharedProfileFile()
+    return
+  }
+
+  const suggested = peekIdeFromSharedFiles() ?? 'cursor'
+  const ideList = Object.keys(IDE_DIR_MAP)
+  const defaultIndex = Math.max(0, ideList.indexOf(suggested))
+
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      'Missing IDE in .aipm/profile.json. Run interactively once or pass: aipm install --ide=cursor (codex|trae|windsurf)',
+    )
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  console.log('\nTarget IDE (saved to .aipm/profile.json, not committed with the repo):')
+  ideList.forEach((ide, i) => console.log(`  ${i + 1}. ${ide}`))
+  const ideChoice = await question(rl, `\nSelect IDE (1-${ideList.length})`, String(defaultIndex + 1))
+  rl.close()
+  const ideIndex = parseInt(String(ideChoice), 10)
+  const picked = ideList[ideIndex - 1] ?? suggested
+  writeLocalIdeProfile({ ide: picked })
+  stripIdeFromSharedProfileFile()
 }
 
 /** Read JSON: remote 先查 bundle 缓存，命中则直接用；否则拉取并写入缓存。 */
@@ -830,9 +1000,72 @@ function parseArtifactFrontmatter(content) {
   const match = content.match(/^---\s*\n([\s\S]*?)\n---/)
   if (!match) return {}
   const block = match[1]
-  const name = block.match(/name:\s*["']([^"']+)["']/)?.[1]
-  const description = block.match(/description:\s*["']([^"']+)["']/)?.[1]
+  const name = block.match(/name:\s*["']([^"']+)["']/)?.[1] ?? block.match(/name:\s*(.+)/)?.[1]?.trim()
+  const descMatch = block.match(/description:\s*["']([^"']+)["']/) ?? block.match(/description:\s*([^\n]+)/)
+  const description = descMatch?.[1]?.trim()
   return { name, description }
+}
+
+/** Validate artifact before publish. Throws on failure. */
+function validatePublishArtifact(srcDir, kindConfig, registryPath, version) {
+  const markerFile = kindConfig.markerFile
+  const markerPath = join(srcDir, markerFile)
+  if (!existsSync(markerPath)) {
+    throw new Error(`Missing ${markerFile}`)
+  }
+  const markerContent = readFileSync(markerPath, 'utf-8')
+  const { name: fmName, description: fmDesc } = parseArtifactFrontmatter(markerContent)
+  if (!fmName?.trim()) {
+    throw new Error(`${markerFile} frontmatter must have "name" field`)
+  }
+  if (!fmDesc?.trim()) {
+    throw new Error(`${markerFile} frontmatter must have "description" field`)
+  }
+
+  const pkgPath = join(srcDir, 'package.json')
+  if (!existsSync(pkgPath)) {
+    throw new Error('package.json is required')
+  }
+  let pkg
+  try {
+    pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+  } catch (e) {
+    throw new Error(`package.json invalid: ${e.message}`)
+  }
+  if (pkg?.name !== registryPath) {
+    throw new Error(
+      `package.json "name" must be "${registryPath}", got "${pkg?.name ?? '(missing)'}"`,
+    )
+  }
+  if (pkg?.version !== version) {
+    throw new Error(
+      `package.json "version" must be "${version}", got "${pkg?.version ?? '(missing)'}"`,
+    )
+  }
+  const files = Array.isArray(pkg?.files) ? pkg.files : []
+  if (!files.length) {
+    throw new Error('package.json "files" array is required and must not be empty')
+  }
+  if (!files.includes(markerFile)) {
+    throw new Error(`package.json "files" must include "${markerFile}"`)
+  }
+  for (const f of files) {
+    const p = join(srcDir, f)
+    if (!existsSync(p)) {
+      throw new Error(`package.json "files" lists "${f}" but file does not exist`)
+    }
+  }
+  const allInDir = listFilesRecursive(srcDir, srcDir).filter(
+    (f) => f !== '.aipm' && f !== 'files.json',
+  )
+  const filesSet = new Set(files)
+  for (const f of allInDir) {
+    if (!filesSet.has(f)) {
+      throw new Error(
+        `File "${f}" exists in directory but is not in package.json "files". Add it or remove the file.`,
+      )
+    }
+  }
 }
 
 /** Recursively list all files under dir, paths relative to dir. */
@@ -970,7 +1203,7 @@ async function cmdInit(args = []) {
   writeConfig(config)
   console.log('\ncreated aipm_profile.json')
   console.log(`registry: ${config.registry}`)
-  console.log(`ide: ${config.ide}`)
+  console.log(`ide: ${config.ide} (saved to .aipm/profile.json — do not commit; use .gitignore)`)
   if (config.profile) {
     console.log(`profile: ${config.profile}`)
   }
@@ -978,6 +1211,7 @@ async function cmdInit(args = []) {
 }
 
 async function cmdPull(...args) {
+  await ensureLocalIdeConfigured(args)
   const config = readConfig()
   const { skills, rules } = await resolveDesiredArtifacts(config)
   const registries = getRegistries(config)
@@ -1060,7 +1294,10 @@ async function cmdPull(...args) {
   console.log('install complete')
 }
 
-async function cmdList() {
+async function cmdList(...args) {
+  if (mergeProjectConfigFromFiles()) {
+    await ensureLocalIdeConfigured(args)
+  }
   const config = readConfigOrDefault()
   const { skills, rules } = await resolveDesiredArtifacts(config)
   const registries = getRegistries(config)
@@ -1087,6 +1324,7 @@ async function cmdList() {
 }
 
 async function cmdUpdate(name, ...args) {
+  await ensureLocalIdeConfigured(args)
   const config = readConfig()
   const { skills, rules } = await resolveDesiredArtifacts(config)
   const registries = getRegistries(config)
@@ -1157,7 +1395,7 @@ async function cmdUpdate(name, ...args) {
   console.log('update complete')
 }
 
-async function cmdDoctor() {
+async function cmdDoctor(...args) {
   let failures = 0
 
   const hasPkgAipm =
@@ -1181,6 +1419,7 @@ async function cmdDoctor() {
 
   console.log('[ok] config exists')
 
+  await ensureLocalIdeConfigured(args)
   const config = readConfig()
   const installPaths = getInstallPaths(config)
   const registries = getRegistries(config)
@@ -1286,7 +1525,8 @@ function listAvailableProfiles(registryRef) {
     .sort()
 }
 
-async function cmdUse(profileId) {
+async function cmdUse(...args) {
+  const profileId = args[0]
   if (!profileId) {
     const config = readConfigOrDefault()
     const registries = getRegistries(config)
@@ -1308,6 +1548,7 @@ async function cmdUse(profileId) {
     return
   }
 
+  await ensureLocalIdeConfigured(args)
   const config = readConfigOrDefault()
   const registries = getRegistries(config)
   const profileData = await loadProfileConfig(registries, profileId)
@@ -1347,11 +1588,15 @@ async function cmdSetToken(tokenArg) {
   console.log('Run `aipm install` to verify.')
 }
 
-async function cmdInstallSkill(name, version = 'latest') {
+async function cmdInstallSkill(...args) {
+  const [name, version = 'latest'] = args
   if (!name) {
     throw new Error('Usage: aipm install-skill <name> [version]  (name: @scope/name or scope_name)')
   }
 
+  if (mergeProjectConfigFromFiles()) {
+    await ensureLocalIdeConfigured(args)
+  }
   const config = readConfigOrDefault()
   const registries = getRegistries(config)
   const lock = readLockFile()
@@ -1377,11 +1622,15 @@ async function cmdInstallSkill(name, version = 'latest') {
   console.log(`installed skill ${name}@${resolvedVersion}`)
 }
 
-async function cmdInstallRule(name, version = 'latest') {
+async function cmdInstallRule(...args) {
+  const [name, version = 'latest'] = args
   if (!name) {
     throw new Error('Usage: aipm install-rule <name> [version]  (name: @scope/name or scope_name)')
   }
 
+  if (mergeProjectConfigFromFiles()) {
+    await ensureLocalIdeConfigured(args)
+  }
   const config = readConfigOrDefault()
   const registries = getRegistries(config)
   const lock = readLockFile()
@@ -1426,11 +1675,12 @@ function resolveNameForUninstall(config, registry, name, kind) {
   return { registryPath: null, installName }
 }
 
-async function cmdUninstallSkill(name) {
+async function cmdUninstallSkill(name, ...args) {
   if (!name) {
     throw new Error('Usage: aipm uninstall-skill <name>  (name: @scope/name or scope_name)')
   }
 
+  await ensureLocalIdeConfigured(args)
   const config = readConfig()
   const installPaths = getInstallPaths(config)
 
@@ -1461,11 +1711,12 @@ async function cmdUninstallSkill(name) {
   console.log('uninstalled skill (if existed)')
 }
 
-async function cmdUninstallRule(name) {
+async function cmdUninstallRule(name, ...args) {
   if (!name) {
     throw new Error('Usage: aipm uninstall-rule <name>  (name: @scope/name or scope_name)')
   }
 
+  await ensureLocalIdeConfigured(args)
   const config = readConfig()
   const installPaths = getInstallPaths(config)
 
@@ -1496,12 +1747,34 @@ async function cmdUninstallRule(name) {
   console.log('uninstalled rule (if existed)')
 }
 
+function formatPublishError(e) {
+  return e instanceof Error ? e.message : String(e)
+}
+
+function printPublishResultsSummary(results) {
+  console.log('')
+  console.log('Publish results:')
+  for (const r of results) {
+    const ver = r.version && r.version !== '—' ? `@${r.version}` : ''
+    if (r.ok) {
+      console.log(`  [${r.kind}] ${r.packageName}${ver}  ok`)
+    } else {
+      console.log(`  [${r.kind}] ${r.packageName}${ver}  failed — ${r.error}`)
+    }
+  }
+  const okn = results.filter((r) => r.ok).length
+  const fail = results.length - okn
+  console.log('---')
+  console.log(`ok: ${okn}, failed: ${fail}`)
+}
+
 /**
- * Push IDE-installed skills/rules back to local registry.
- * Only works when config.registry is a local path (not URL).
- * Source: .<ide>/skills/ and .<ide>/rules/ (relative to workspace root where aipm_profile.json lives)
+ * Publish IDE skills/rules：目标由 resolvePublishTarget 决定（--registry > package.sourceRegistry > 默认）。
+ * 默认 registry 为 DEFAULT_REGISTRY_URL（HTTP aipm-registry）；本地路径则直接写盘。
+ * Source: .<ide>/skills/、.<ide>/rules/（相对含 aipm_profile.json 的项目根）
  */
 async function cmdPush(...args) {
+  await ensureLocalIdeConfigured(args)
   const filtered = args.filter((a) => !a.startsWith('-'))
   const name = filtered[0]
   const config = readConfig()
@@ -1542,7 +1815,7 @@ async function cmdPush(...args) {
     }
   }
 
-  function pushArtifact(kind, installName, registryPath, version, registryRef, registryBase, registry) {
+  function pushArtifact(kind, installName, registryPath, version, registryRef, registryBase, registry, quiet = false) {
     const kindConfig = ARTIFACT_KIND[kind]
     const existingVersions = registry[kindConfig.registryKey]?.[registryPath]?.versions ?? []
     if (existingVersions.includes(version)) {
@@ -1558,6 +1831,8 @@ async function cmdPush(...args) {
     if (!existsSync(srcDir)) {
       throw new Error(`${kind} ${installName} not found in ${ideDir}`)
     }
+
+    validatePublishArtifact(srcDir, kindConfig, registryPath, version)
 
     const markerFile = kindConfig.markerFile
     const allFiles = listFilesRecursive(srcDir, srcDir)
@@ -1638,8 +1913,10 @@ async function cmdPush(...args) {
     if (verbose) {
       console.log(`  ${relative(ROOT, srcDir)} -> ${relative(ROOT, destDir)}`)
     }
-    process.stdout.write(`Pushed ${kind} ${installName}@${version} `)
-    console.log('ok')
+    if (!quiet) {
+      process.stdout.write(`Pushed ${kind} ${installName}@${version} `)
+      console.log('ok')
+    }
   }
 
   const registryCache = new Map()
@@ -1650,59 +1927,103 @@ async function cmdPush(...args) {
     return registryCache.get(registryRef)
   }
 
+  const publishQuiet = !verbose
+  const results = []
+
   for (const packageName of skillTargets) {
-    const installName = registryPathToInstallName(packageName)
-    const ideDir = join(installPaths.skillInstallDir, installName)
-    const registryRef = resolvePublishTarget(config, ideDir, registryOverride)
-    if (!registryRef) {
-      throw new Error(
-        `publish ${packageName}: no local registry. Add one to registries or use --registry <path>.`,
-      )
-    }
-    const registryBase = resolveLocalBase(registryRef)
-    const registry = await getRegistryForPush(registryRef)
-    const version = config.skills?.[packageName] ?? skills[packageName] ?? '1.0.0'
-    const isNew = !registry.packages?.[packageName]
-    if (isNew) {
-      await addArtifactToRegistry('skill', packageName, version, args)
-    } else {
-      const { registryPath, installName: inName } = resolveArtifactPath(
-        registry,
-        'skill',
+    let version = ''
+    try {
+      const installName = registryPathToInstallName(packageName)
+      const ideDir = join(installPaths.skillInstallDir, installName)
+      const registryRef = resolvePublishTarget(config, ideDir, registryOverride)
+      if (!registryRef) {
+        throw new Error(
+          `no registry. Add one to registries or use --registry <path-or-url>.`,
+        )
+      }
+      const registry = await getRegistryForPush(registryRef)
+      version = config.skills?.[packageName] ?? skills[packageName] ?? '1.0.0'
+      if (isUrl(registryRef)) {
+        await publishToRemoteRegistry('skill', packageName, version, registryRef, { quiet: publishQuiet })
+      } else {
+        const registryBase = resolveLocalBase(registryRef)
+        const isNew = !registry.packages?.[packageName]
+        if (isNew) {
+          await addArtifactToRegistry('skill', packageName, version, args, publishQuiet)
+        } else {
+          const { registryPath, installName: inName } = resolveArtifactPath(
+            registry,
+            'skill',
+            packageName,
+            version,
+          )
+          pushArtifact('skill', inName, registryPath, version, registryRef, registryBase, registry, publishQuiet)
+        }
+      }
+      results.push({ kind: 'skill', packageName, version, ok: true })
+    } catch (e) {
+      const msg = formatPublishError(e)
+      results.push({
+        kind: 'skill',
         packageName,
-        version,
-      )
-      pushArtifact('skill', inName, registryPath, version, registryRef, registryBase, registry)
+        version: version || '—',
+        ok: false,
+        error: msg,
+      })
     }
   }
 
   for (const packageName of ruleTargets) {
-    const installName = registryPathToInstallName(packageName)
-    const ideDir = join(installPaths.ruleInstallDir, installName)
-    const registryRef = resolvePublishTarget(config, ideDir, registryOverride)
-    if (!registryRef) {
-      throw new Error(
-        `publish ${packageName}: no local registry. Add one to registries or use --registry <path>.`,
-      )
-    }
-    const registryBase = resolveLocalBase(registryRef)
-    const registry = await getRegistryForPush(registryRef)
-    const version = config.rules?.[packageName] ?? rules[packageName] ?? '1.0.0'
-    const isNew = !registry.rules?.[packageName]
-    if (isNew) {
-      await addArtifactToRegistry('rule', packageName, version, args)
-    } else {
-      const { registryPath, installName: inName } = resolveArtifactPath(
-        registry,
-        'rule',
+    let version = ''
+    try {
+      const installName = registryPathToInstallName(packageName)
+      const ideDir = join(installPaths.ruleInstallDir, installName)
+      const registryRef = resolvePublishTarget(config, ideDir, registryOverride)
+      if (!registryRef) {
+        throw new Error(
+          `no registry. Add one to registries or use --registry <path-or-url>.`,
+        )
+      }
+      const registry = await getRegistryForPush(registryRef)
+      version = config.rules?.[packageName] ?? rules[packageName] ?? '1.0.0'
+      if (isUrl(registryRef)) {
+        await publishToRemoteRegistry('rule', packageName, version, registryRef, { quiet: publishQuiet })
+      } else {
+        const registryBase = resolveLocalBase(registryRef)
+        const isNew = !registry.rules?.[packageName]
+        if (isNew) {
+          await addArtifactToRegistry('rule', packageName, version, args, publishQuiet)
+        } else {
+          const { registryPath, installName: inName } = resolveArtifactPath(
+            registry,
+            'rule',
+            packageName,
+            version,
+          )
+          pushArtifact('rule', inName, registryPath, version, registryRef, registryBase, registry, publishQuiet)
+        }
+      }
+      results.push({ kind: 'rule', packageName, version, ok: true })
+    } catch (e) {
+      const msg = formatPublishError(e)
+      results.push({
+        kind: 'rule',
         packageName,
-        version,
-      )
-      pushArtifact('rule', inName, registryPath, version, registryRef, registryBase, registry)
+        version: version || '—',
+        ok: false,
+        error: msg,
+      })
     }
   }
 
-  console.log('publish complete. Run `git add` and `git commit` in the registry to save changes.')
+  printPublishResultsSummary(results)
+  const failCount = results.filter((r) => !r.ok).length
+  if (failCount) {
+    process.exitCode = 1
+    console.log(`Publish finished with ${failCount} failure(s). Fix errors and re-run publish.`)
+  } else {
+    console.log('publish complete. Run `git add` and `git commit` in the registry to save changes.')
+  }
 }
 
 /** Scaffold IDE artifact dir. Creates package.json and marker file. */
@@ -1720,11 +2041,13 @@ function scaffoldArtifactDir(kind, installName, registryPath, version, descripti
   const logicalName = registryPath.includes('/') ? registryPath.split('/').pop() : registryPath
   const desc = description ?? `${kind}: ${logicalName}`
 
+  const markerFile = kindConfig.markerFile
   const pkg = {
     name: registryPath,
     version,
     description: desc,
     aipm: { type: kind, sourceRegistry: 'default' },
+    files: [markerFile, 'package.json'],
   }
   writeFileSync(join(srcDir, 'package.json'), JSON.stringify(pkg, null, 2) + '\n', 'utf-8')
 
@@ -1746,14 +2069,119 @@ description: "${desc}"
 # ${logicalName}
 
 <!-- Add rule content here. -->\n`
-  writeFileSync(join(srcDir, kindConfig.markerFile), markerContent, 'utf-8')
+  writeFileSync(join(srcDir, markerFile), markerContent, 'utf-8')
 
   console.log(`Created ${kind} scaffold at ${relative(ROOT, srcDir)}`)
   return srcDir
 }
 
+/** Publish artifact to remote HTTP registry (POST /api/publish). */
+async function publishToRemoteRegistry(kind, packageName, version, registryUrl, options = {}) {
+  const kindConfig = ARTIFACT_KIND[kind]
+  const config = readConfig()
+  const installPaths = getInstallPaths(config)
+  const installName = registryPathToInstallName(packageName)
+  const srcDir =
+    kind === 'skill'
+      ? join(installPaths.skillInstallDir, installName)
+      : join(installPaths.ruleInstallDir, installName)
+
+  if (!existsSync(srcDir)) {
+    throw new Error(`${kind} '${installName}' not found. Run \`aipm init-${kind}\` or \`aipm install\` first.`)
+  }
+
+  const registryPath = packageName
+  validatePublishArtifact(srcDir, kindConfig, registryPath, version)
+
+  const allFiles = listFilesRecursive(srcDir, srcDir).filter(
+    (f) => f !== '.aipm' && f !== 'files.json',
+  )
+  const files = {}
+  for (const f of allFiles) {
+    const p = join(srcDir, f)
+    if (existsSync(p)) {
+      files[f] = readFileSync(p, 'utf-8')
+    }
+  }
+  if (files['package.json']) {
+    try {
+      const pkg = JSON.parse(files['package.json'])
+      if (!pkg.aipm) pkg.aipm = {}
+      pkg.aipm.sourceRegistry = pkg.aipm.sourceRegistry ?? 'default'
+      pkg.files = Object.keys(files)
+      files['package.json'] = JSON.stringify(pkg, null, 2) + '\n'
+    } catch {
+      /* keep original */
+    }
+  }
+
+  const markerPath = join(srcDir, kindConfig.markerFile)
+  const { description: fmDesc } = parseArtifactFrontmatter(readFileSync(markerPath, 'utf-8'))
+  const base = registryUrl.replace(/\/+$/, '')
+  const apiUrl = `${base}/api/publish`
+  const token = getRegistryToken()
+
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'aipm-publish-'))
+  let tarGz
+  let manifest
+  try {
+    for (const [rel, content] of Object.entries(files)) {
+      const full = join(tmpRoot, rel)
+      mkdirSync(dirname(full), { recursive: true })
+      writeFileSync(full, content, 'utf-8')
+    }
+    const relKeys = Object.keys(files).sort()
+    tarGz = packArtifactTarGz(tmpRoot, relKeys)
+    const filesSha256 = {}
+    for (const f of relKeys) {
+      const buf = readFileSync(join(tmpRoot, f))
+      filesSha256[f] = createHash('sha256').update(buf).digest('hex')
+    }
+    manifest = {
+      kind,
+      registryPath,
+      version,
+      description: fmDesc || undefined,
+      filesSha256,
+    }
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true })
+  }
+
+  const { contentType, body } = encodeMultipartPublish(JSON.stringify(manifest), tarGz)
+
+  const res = await fetch(apiUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': contentType,
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body,
+  })
+  const raw = await res.text()
+  let data = {}
+  try {
+    data = JSON.parse(raw)
+  } catch {
+    /* non-JSON body (e.g. proxy HTML) */
+  }
+  if (!res.ok) {
+    const hint = typeof data.error === 'string' ? data.error : raw.slice(0, 200)
+    throw new Error(hint || `Publish failed (${res.status})`)
+  }
+
+  const configKey = kind === 'skill' ? 'skills' : 'rules'
+  config[configKey] ??= {}
+  config[configKey][registryPath] = version
+  writeConfig(config)
+
+  if (!options.quiet) {
+    console.log(`Published ${kind} ${registryPath}@${version} to ${base}`)
+  }
+}
+
 /** Add artifact (skill or rule) from IDE to Registry. */
-async function addArtifactToRegistry(kind, name, version, args) {
+async function addArtifactToRegistry(kind, name, version, args, quiet = false) {
   const kindConfig = ARTIFACT_KIND[kind]
   const config = readConfig()
   const installName =
@@ -1796,6 +2224,8 @@ async function addArtifactToRegistry(kind, name, version, args) {
   )
 
   validateRegistryPath(registryPath, kind === 'skill' ? 'Skill' : 'Rule')
+
+  validatePublishArtifact(srcDir, kindConfig, registryPath, version)
 
   const allFiles = listFilesRecursive(srcDir, srcDir)
   if (!allFiles.includes(kindConfig.markerFile)) {
@@ -1883,16 +2313,19 @@ async function addArtifactToRegistry(kind, name, version, args) {
   config[configKey][registryPath] = version
   writeConfig(config)
 
-  console.log(`Added ${kind} ${registryPath}@${version} to registry`)
-  console.log(`  ${relative(ROOT, srcDir)} -> ${relative(ROOT, destDir)}`)
-  console.log(`  Run \`git add\` in the registry to save.`)
+  if (!quiet) {
+    console.log(`Added ${kind} ${registryPath}@${version} to registry`)
+    console.log(`  ${relative(ROOT, srcDir)} -> ${relative(ROOT, destDir)}`)
+    console.log(`  Run \`git add\` in the registry to save.`)
+  }
 }
 
 /** Create new skill/rule package interactively. Prompts for name, description, version. */
-async function cmdInitSkill() {
+async function cmdInitSkill(...args) {
   if (!process.stdin.isTTY) {
     throw new Error('aipm init-skill requires interactive mode. Run in a terminal.')
   }
+  await ensureLocalIdeConfigured(args)
   const config = readConfig()
   const installPaths = getInstallPaths(config)
   ensureIdeDirs(installPaths)
@@ -1935,10 +2368,11 @@ async function cmdInitSkill() {
 }
 
 /** Create new rule package interactively. */
-async function cmdInitRule() {
+async function cmdInitRule(...args) {
   if (!process.stdin.isTTY) {
     throw new Error('aipm init-rule requires interactive mode. Run in a terminal.')
   }
+  await ensureLocalIdeConfigured(args)
   const config = readConfig()
   const installPaths = getInstallPaths(config)
   ensureIdeDirs(installPaths)
@@ -2097,8 +2531,9 @@ Usage:
 
 Primary commands:
   init [--registry PATH]   Create aipm_profile.json in project root (interactive)
-  install [--on-conflict=..]
+  install [--on-conflict=..] [--ide=cursor|codex|trae|windsurf]
                           Install declared skills/rules (writes aipm_profile.lock.json for reproducibility)
+                          Uses .aipm/profile.json for IDE; creates it on first run if missing
   list                    List declared and installed skills/rules
   update [name] [--on-conflict=..]
                           Update one artifact or all artifacts
@@ -2115,7 +2550,7 @@ Registry commands (local registry only):
   unpublish-rule <name>  Remove rule from registry
 
 Additional commands:
-  set-token [token]       Save AIPM_REGISTRY_TOKEN to ~/.aipm/config.json (for private Codeup)
+  set-token [token]       Save registry token (~/.aipm/config.json); publish uses Bearer, GET may use ?token=
   use [profile-id]        Switch to profile (配置单). Without arg, list available profiles.
   install-skill <name> [version]   Add skill to config and install from registry
   install-rule <name> [version]   Add rule to config and install from registry
@@ -2125,13 +2560,15 @@ Additional commands:
   help, --help, -h        Show this help
 
 Config keys:
-  aipm_profile.json: registry, registries  Project custom registries (optional)
+  aipm_profile.json       Synced project config: registry, registries, profile, skills, rules (no ide)
+  .aipm/profile.json      Local only: ide (and future per-machine keys). Created on first install if missing.
   ~/.aipm/config.json: registries          Global custom registries (all projects)
+  package.json aipm.*     Optional; ide in package.json is treated like legacy and not written back to profile
   package.json aipm.sourceRegistry         Package source for publish ("default" or path)
-  Default registry is fixed in code; project + global + default are merged in order.
+  Default registry is http://localhost:9005/ (aipm-registry); project + global + default are merged in order.
   profile                 Current profile (loads skills/rules from profiles/<profile>.json)
   skills, rules           Dependencies (npm-style: name -> version). Override profile.
-  ide                     Target IDE (cursor|codex|trae|windsurf)
+  ide                     Set via .aipm/profile.json; override once with --ide= on install/update/etc.
 
 Bundle cache (~/.aipm/cache): Remote reads are cached; publish backs up to cache.
 
