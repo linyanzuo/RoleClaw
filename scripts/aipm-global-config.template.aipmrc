@@ -1,0 +1,11 @@
+# 首次可执行: aipm global  （从本模板复制到 ~/.aipmrc）
+# 令牌也可: aipm set-token <token>  （会写入 registry-token= 行）
+
+# 可选。Registry Bearer；与 set-token 二选一或并存（此处手写）
+# registry-token=
+
+# 单个默认仓库 URL，例如 http://192.168.1.100:9005/
+# registry=
+
+# 多个仓库：逗号分隔，或写多行 registries=
+# registries=

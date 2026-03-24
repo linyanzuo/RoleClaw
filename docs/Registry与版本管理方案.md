@@ -41,7 +41,7 @@ aipm 支持通过 URL 拉取 registry，成员无需拉取主仓代码。
    - **推荐**：自建 **aipm-registry**（HTTP），如 `http://localhost:9005/` 或内网 `https://registry.example.com/`
    - 其它：任意可 GET `registry.json`、`profiles/`、`assets/` 的 HTTP 根路径（如 Git 平台的 raw URL、OSS 静态站等）
 2. 在 `aipm init` 时，可通过 `--registry <url>` 指定远程 URL，写入 `aipm_profile.json`。
-3. Registry 来源（优先级）：**项目配置** > **全局配置**（~/.aipm/config.json）> **默认远程**（代码固定）。`AIPM_REGISTRY` 环境变量已废弃。
+3. Registry 来源（优先级）：**项目配置** > **全局配置**（`~/.aipmrc`）> **默认远程**（代码固定）。`AIPM_REGISTRY` 环境变量已废弃。
 4. 验证：配置远程 URL 后执行 `aipm install`，能正确拉取 packages。
 
 #### 完成标准

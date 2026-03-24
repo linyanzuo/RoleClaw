@@ -105,8 +105,11 @@ const AIPM_DIR = join(ROOT, '.aipm')
 /** 本机 IDE 等不随仓库同步的配置（建议在 .gitignore 中忽略 .aipm/） */
 const LOCAL_IDE_PROFILE_FILE = join(AIPM_DIR, 'profile.json')
 const USER_CONFIG_DIR = join(homedir(), '.aipm')
-const USER_CONFIG_FILE = join(USER_CONFIG_DIR, 'config.json')
+/** 与 npm 的 ~/.npmrc 类似：key=value，# 行注释 */
+const USER_AIPMRC_FILE = join(homedir(), '.aipmrc')
 const BUNDLE_CACHE_DIR = join(USER_CONFIG_DIR, 'cache')
+/** 与 aipm.mjs 同目录；npmrc 风格模板，供 `aipm global` 首次创建 ~/.aipmrc */
+const GLOBAL_AIPMRC_TEMPLATE_FILE = join(dirname(SCRIPT_FILE), 'aipm-global-config.template.aipmrc')
 const PROFILE_CONFIG_FILE = join(ROOT, 'aipm_profile.json')
 const PROFILE_LOCK_FILE = join(ROOT, 'aipm_profile.lock.json')
 const PACKAGE_JSON = join(ROOT, 'package.json')
@@ -139,16 +142,37 @@ function joinUrl(base, relativePath) {
   return `${base.replace(/\/+$/, '')}/${relativePath.replace(/^\/+/, '')}`
 }
 
-/** Read registry token: env AIPM_REGISTRY_TOKEN > ~/.aipm/config.json */
-function getRegistryToken() {
-  if (process.env.AIPM_REGISTRY_TOKEN) return process.env.AIPM_REGISTRY_TOKEN
-  if (!existsSync(USER_CONFIG_FILE)) return null
-  try {
-    const cfg = JSON.parse(readFileSync(USER_CONFIG_FILE, 'utf-8'))
-    return cfg?.registryToken ?? null
-  } catch {
-    return null
+/** 解析 ~/.aipmrc：npmrc 风格，# 为行尾注释；registry-token / registry / registries（逗号分隔，可多行累加）。 */
+function parseAipmrc(text) {
+  const out = {}
+  const regList = []
+  for (let line of text.split(/\r?\n/)) {
+    const hash = line.indexOf('#')
+    if (hash >= 0) line = line.slice(0, hash)
+    line = line.trim()
+    if (!line || line.startsWith(';')) continue
+    const eq = line.indexOf('=')
+    if (eq < 0) continue
+    const rawKey = line.slice(0, eq).trim().toLowerCase().replace(/-/g, '')
+    let val = line.slice(eq + 1).trim()
+    if (
+      (val.startsWith('"') && val.endsWith('"') && val.length >= 2) ||
+      (val.startsWith("'") && val.endsWith("'") && val.length >= 2)
+    ) {
+      val = val.slice(1, -1)
+    }
+    if (rawKey === 'registrytoken') {
+      if (val) out.registryToken = val
+    } else if (rawKey === 'registry') {
+      if (val) out.registry = val.replace(/\/+$/, '') + '/'
+    } else if (rawKey === 'registries') {
+      for (const part of val.split(',').map((s) => s.trim()).filter(Boolean)) {
+        regList.push(part.replace(/\/+$/, '') + '/')
+      }
+    }
   }
+  if (regList.length) out.registries = regList
+  return out
 }
 
 /** 为支持 query token 的私有 HTTP 源追加 token（GET 拉取用）。已含 token= / private_token= 则不改。 */
@@ -243,14 +267,25 @@ function defaultRegistryRef() {
   return DEFAULT_REGISTRY_URL
 }
 
-/** 读取全局配置 ~/.aipm/config.json（CLI 级，所有项目共享）。 */
+/** 读取全局配置 ~/.aipmrc（npmrc 风格，支持 # 注释）。 */
 function readGlobalConfig() {
-  if (!existsSync(USER_CONFIG_FILE)) return {}
+  if (!existsSync(USER_AIPMRC_FILE)) return {}
   try {
-    return JSON.parse(readFileSync(USER_CONFIG_FILE, 'utf-8'))
+    return parseAipmrc(readFileSync(USER_AIPMRC_FILE, 'utf-8'))
   } catch {
     return {}
   }
+}
+
+/** Read registry token: env AIPM_REGISTRY_TOKEN > ~/.aipmrc */
+function getRegistryToken() {
+  if (process.env.AIPM_REGISTRY_TOKEN) {
+    const e = String(process.env.AIPM_REGISTRY_TOKEN).trim()
+    return e || null
+  }
+  const t = readGlobalConfig().registryToken
+  if (t == null || String(t).trim() === '') return null
+  return String(t)
 }
 
 function defaultConfig() {
@@ -265,7 +300,7 @@ function defaultConfig() {
 /**
  * 返回有序 registry 列表。顺序：项目自定义 → 全局自定义 → 默认仓库。
  * - 默认仓库：http://localhost:9005/（aipm-registry，与 DEFAULT_REGISTRY_URL 一致）
- * - 全局自定义：~/.aipm/config.json 的 registries，所有项目共享
+ * - 全局自定义：~/.aipmrc 的 registry / registries，所有项目共享
  * - 项目自定义：aipm_profile.json 的 registry/registries，仅当前项目生效
  */
 function getRegistries(config) {
@@ -280,7 +315,14 @@ function getRegistries(config) {
     projectList = [config.registry]
   }
   const globalCfg = readGlobalConfig()
-  const globalList = Array.isArray(globalCfg?.registries) ? globalCfg.registries : []
+  let globalList = []
+  const gMulti = globalCfg?.registries
+  if (gMulti != null) {
+    globalList = (Array.isArray(gMulti) ? gMulti : [gMulti]).filter(Boolean)
+  }
+  if (!globalList.length && globalCfg?.registry) {
+    globalList = [globalCfg.registry]
+  }
   const combined = [...projectList.filter(Boolean), ...globalList.filter(Boolean)]
   const defaultRef = defaultRegistryRef()
   if (combined.includes(defaultRef)) return combined
@@ -1430,6 +1472,7 @@ async function cmdDoctor(...args) {
     const token = getRegistryToken()
     console.log(`[info] registries: ${registries.join(', ')}`)
     console.log(`[info] bundle cache: ${BUNDLE_CACHE_DIR}`)
+    console.log(`[info] global config: ${USER_AIPMRC_FILE}`)
     console.log(`[info] token: ${token ? 'configured' : 'not set (run aipm set-token for private)'}`)
   }
   try {
@@ -1575,17 +1618,53 @@ async function cmdSetToken(tokenArg) {
   if (!token) {
     throw new Error('Usage: aipm set-token <token>   or run interactively')
   }
+  if (/[\r\n]/.test(token)) {
+    throw new Error('Registry token must not contain newlines')
+  }
 
   mkdirSync(USER_CONFIG_DIR, { recursive: true })
-  const cfg = existsSync(USER_CONFIG_FILE)
-    ? JSON.parse(readFileSync(USER_CONFIG_FILE, 'utf-8'))
-    : {}
-  cfg.registryToken = token
-  writeFileSync(USER_CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n', 'utf-8')
-  chmodSync(USER_CONFIG_FILE, 0o600)
+  let text = existsSync(USER_AIPMRC_FILE) ? readFileSync(USER_AIPMRC_FILE, 'utf-8') : ''
+  const lineRe = /^[ \t]*registry-token[ \t]*=.*/im
+  const newLine = `registry-token=${token}`
+  if (lineRe.test(text)) {
+    text = text.replace(lineRe, newLine)
+  } else {
+    if (text && !text.endsWith('\n')) text += '\n'
+    text += `${newLine}\n`
+  }
+  writeFileSync(USER_AIPMRC_FILE, text, 'utf-8')
+  chmodSync(USER_AIPMRC_FILE, 0o600)
 
-  console.log(`Registry token saved to ${USER_CONFIG_FILE}`)
+  console.log(`Registry token saved to ${USER_AIPMRC_FILE}`)
   console.log('Run `aipm install` to verify.')
+}
+
+/** 若 ~/.aipmrc 不存在，则从模板复制创建。 */
+function ensureGlobalConfigFileFromTemplate() {
+  mkdirSync(USER_CONFIG_DIR, { recursive: true })
+  if (existsSync(USER_AIPMRC_FILE)) return false
+  let body = ''
+  if (existsSync(GLOBAL_AIPMRC_TEMPLATE_FILE)) {
+    body = readFileSync(GLOBAL_AIPMRC_TEMPLATE_FILE, 'utf-8')
+    if (body && !body.endsWith('\n')) body += '\n'
+  }
+  writeFileSync(USER_AIPMRC_FILE, body, 'utf-8')
+  chmodSync(USER_AIPMRC_FILE, 0o600)
+  return true
+}
+
+async function cmdGlobal() {
+  const created = ensureGlobalConfigFileFromTemplate()
+  let status
+  if (created) status = 'created'
+  else if (existsSync(USER_AIPMRC_FILE)) status = 'exists'
+  else status = 'missing'
+
+  const labelW = 11
+  const line = (k, v) => console.log(`${k.padEnd(labelW)}${v}`)
+  line('file:', USER_AIPMRC_FILE)
+  line('status:', status)
+  line('template:', GLOBAL_AIPMRC_TEMPLATE_FILE)
 }
 
 async function cmdInstallSkill(...args) {
@@ -2550,7 +2629,8 @@ Registry commands (local registry only):
   unpublish-rule <name>  Remove rule from registry
 
 Additional commands:
-  set-token [token]       Save registry token (~/.aipm/config.json); publish uses Bearer, GET may use ?token=
+  global                  Print ~/.aipmrc path / status / template path; create from template if no global file yet
+  set-token [token]       Save registry-token in ~/.aipmrc (npmrc-style); publish uses Bearer, GET may use ?token=
   use [profile-id]        Switch to profile (配置单). Without arg, list available profiles.
   install-skill <name> [version]   Add skill to config and install from registry
   install-rule <name> [version]   Add rule to config and install from registry
@@ -2562,7 +2642,7 @@ Additional commands:
 Config keys:
   aipm_profile.json       Synced project config: registry, registries, profile, skills, rules (no ide)
   .aipm/profile.json      Local only: ide (and future per-machine keys). Created on first install if missing.
-  ~/.aipm/config.json: registries          Global custom registries (all projects)
+  ~/.aipmrc                Global (npmrc-style): registry, registries (comma or repeated lines), registry-token; # comments
   package.json aipm.*     Optional; ide in package.json is treated like legacy and not written back to profile
   package.json aipm.sourceRegistry         Package source for publish ("default" or path)
   Default registry is http://localhost:9005/ (aipm-registry); project + global + default are merged in order.
@@ -2595,6 +2675,7 @@ const COMMANDS = {
   'uninstall-skill': cmdUninstallSkill,
   'uninstall-rule': cmdUninstallRule,
   'set-token': cmdSetToken,
+  global: cmdGlobal,
   search: cmdSearch,
 }
 

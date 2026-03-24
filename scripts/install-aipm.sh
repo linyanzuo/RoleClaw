@@ -52,7 +52,7 @@ print_next_steps() {
   echo "  aipm init          # interactive: select IDE & profile"
   echo "  aipm install       # install skills and rules"
   echo
-  echo "Registry: 默认远程 / 全局配置(~/.aipm) / 项目配置(aipm_profile.json)"
+  echo "Registry: 默认远程 / 全局配置(~/.aipmrc) / 项目配置(aipm_profile.json)"
   echo "  aipm init --registry <path-or-url>   # 指定 registry"
 }
 

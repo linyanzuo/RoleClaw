@@ -58,7 +58,7 @@ function Print-NextSteps {
     Write-Host "  aipm init          # interactive: select IDE & role"
     Write-Host "  aipm install       # install skills and rules"
     Write-Host ""
-    Write-Host "Registry: default remote / global (~/.aipm) / project (aipm_profile.json)"
+    Write-Host "Registry: default remote / global (~/.aipmrc) / project (aipm_profile.json)"
     Write-Host "  aipm init --registry <path-or-url>   # specify registry"
 }
 

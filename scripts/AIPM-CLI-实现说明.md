@@ -70,7 +70,7 @@
 `getRegistries(config)` 返回有序列表：
 
 1. 项目 `registries` 或 `registry`
-2. 全局 `~/.aipm/config.json` 的 `registries`
+2. 全局 `~/.aipmrc` 的 `registry` / `registries`（npmrc 风格）
 3. 默认仓库 `http://localhost:9005/`（aipm-registry；若未包含在列表中则自动追加）
 
 ### Registry 目录结构
