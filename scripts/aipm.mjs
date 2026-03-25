@@ -44,6 +44,46 @@ function parseSemver(v) {
   return m ? [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)] : null
 }
 
+/**
+ * npm-style ^ range: locked version must be >= min and below next incompatible bump.
+ * ^1.2.3 -> [1.2.3, 2.0.0); ^0.2.3 -> [0.2.3, 0.3.0); ^0.0.3 -> [0.0.3, 0.0.4)
+ */
+function lockedVersionSatisfiesCaret(lockedV, caretRequest) {
+  const minStr = caretRequest.slice(1).trim()
+  const l = parseSemver(lockedV)
+  const min = parseSemver(minStr)
+  if (!l || !min) return false
+  const ge = semverCompare(lockedV, minStr)
+  if (ge === null || ge < 0) return false
+
+  const [lMaj, lMin, lPat] = l
+  const [mMaj, mMin, mPat] = min
+
+  if (mMaj > 0) {
+    return lMaj === mMaj
+  }
+  if (mMin > 0) {
+    return lMaj === 0 && lMin === mMin
+  }
+  return lMaj === 0 && lMin === 0 && lPat === mPat
+}
+
+/** Declared constraint (exact or ^x.y.z) satisfied by locked version — for lockfile preference like npm. */
+function lockedVersionSatisfiesRequest(lockedV, requested) {
+  if (requested == null || requested === '') return false
+  const r = String(requested).trim()
+  if (r === 'latest') return false
+  if (r.startsWith('^')) return lockedVersionSatisfiesCaret(lockedV, r)
+  return String(lockedV) === r
+}
+
+/** Greatest published version satisfying npm-style ^ (same rules as lockedVersionSatisfiesCaret). */
+function maxVersionSatisfyingCaret(versions, caretRequest) {
+  if (!versions?.length) return null
+  const candidates = versions.filter((v) => lockedVersionSatisfiesCaret(v, caretRequest))
+  return maxSemverAmongVersions(candidates)
+}
+
 function maxSemverAmongVersions(versions) {
   if (!versions?.length) return null
   let best = versions[0]
@@ -196,6 +236,30 @@ function isUrl(value) {
   return /^https?:\/\//.test(value)
 }
 
+/**
+ * Canonical http(s) registry root: trailing slashes on the path do not create a second source.
+ * e.g. http://localhost:9005 and http://localhost:9005/ → http://localhost:9005/
+ */
+function normalizeHttpRegistryBase(ref) {
+  const s = String(ref).trim()
+  if (!isUrl(s)) return s
+  try {
+    const u = new URL(s)
+    let path = u.pathname || '/'
+    while (path.length > 1 && path.endsWith('/')) {
+      path = path.slice(0, -1)
+    }
+    if (!path || path === '') path = '/'
+    if (path === '/') {
+      return `${u.origin}/`
+    }
+    return `${u.origin}${path}/`
+  } catch {
+    const trimmed = s.replace(/\/+$/, '')
+    return `${trimmed}/`
+  }
+}
+
 function joinUrl(base, relativePath) {
   return `${base.replace(/\/+$/, '')}/${relativePath.replace(/^\/+/, '')}`
 }
@@ -243,9 +307,10 @@ function appendRegistryToken(url) {
   return `${url}${sep}token=${encodeURIComponent(token)}`
 }
 
-/** Registry ID for bundle cache (stable hash of ref). */
+/** Registry ID for bundle cache (stable hash of normalized ref so http://host and http://host/ share cache). */
 function registryCacheId(ref) {
-  return createHash('sha256').update(ref).digest('hex').slice(0, 16)
+  const key = ref != null ? resolveRegistryRef(ref) : ref
+  return createHash('sha256').update(String(key)).digest('hex').slice(0, 16)
 }
 
 /** Bundle cache path for a remote resource. */
@@ -314,17 +379,50 @@ function resolveLocalBase(baseRef) {
   return isAbsolute(baseRef) ? baseRef : resolve(ROOT, baseRef)
 }
 
-/** Resolve registry ref. Local path must exist; no bundled fallback. */
+/** Resolve registry ref. HTTP(S) roots are normalized so trailing slash does not fork cache or list entries. */
 function resolveRegistryRef(ref) {
-  if (isUrl(ref)) return ref
+  if (ref == null || ref === '') return ref
+  if (isUrl(ref)) return normalizeHttpRegistryBase(ref)
   return ref
+}
+
+/** Stable string for equality: same logical http(s) registry regardless of trailing slashes. */
+function normalizeRegistryRefForCompare(ref) {
+  const s = String(resolveRegistryRef(ref)).trim()
+  if (isUrl(s)) {
+    try {
+      const u = new URL(s)
+      let path = u.pathname || '/'
+      while (path.length > 1 && path.endsWith('/')) {
+        path = path.slice(0, -1)
+      }
+      if (path === '/' || path === '') return u.origin
+      return `${u.origin}${path}`
+    } catch {
+      return s.replace(/\/+$/, '')
+    }
+  }
+  return s.replace(/\/+$/, '') || s
+}
+
+function dedupeRegistryRefs(list) {
+  const seen = new Set()
+  const out = []
+  for (const ref of list) {
+    if (!ref) continue
+    const key = isUrl(ref) ? normalizeRegistryRefForCompare(ref) : String(ref)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(ref)
+  }
+  return out
 }
 
 /** 默认仓库：本地 aipm-registry（Docker 映射宿主机 9005）。未启动服务时 install 会失败，可改用项目/全局 registry 覆盖。 */
 const DEFAULT_REGISTRY_URL = 'http://localhost:9005/'
 
 function defaultRegistryRef() {
-  return DEFAULT_REGISTRY_URL
+  return normalizeHttpRegistryBase(DEFAULT_REGISTRY_URL)
 }
 
 /** 读取全局配置 ~/.aipmrc（npmrc 风格，支持 # 注释）。 */
@@ -384,10 +482,15 @@ function getRegistries(config) {
   if (!globalList.length && globalCfg?.registry) {
     globalList = [globalCfg.registry]
   }
-  const combined = [...projectList.filter(Boolean), ...globalList.filter(Boolean)]
+  const rawCombined = [...projectList.filter(Boolean), ...globalList.filter(Boolean)]
+  let combined = dedupeRegistryRefs(rawCombined.map((r) => resolveRegistryRef(r)))
   const defaultRef = defaultRegistryRef()
-  if (combined.includes(defaultRef)) return combined
-  return [...combined, defaultRef]
+  const defaultKey = normalizeRegistryRefForCompare(defaultRef)
+  const hasDefaultLike = combined.some((r) => normalizeRegistryRefForCompare(r) === defaultKey)
+  if (!hasDefaultLike) {
+    combined = dedupeRegistryRefs([...combined, defaultRef])
+  }
+  return combined
 }
 
 /** 默认 publish 目标：第一个可用的 registry（本地路径存在 或 HTTP URL）。 */
@@ -474,7 +577,7 @@ function writeConfig(data) {
 
 const LOCKFILE_VERSION = 1
 
-/** Read aipm_profile.lock.json. Returns null if missing or invalid. */
+/** Read aipm_profile.lock.json (pinned registry + version per package for team reproducibility). */
 function readLockFile() {
   if (!existsSync(PROFILE_LOCK_FILE)) return null
   try {
@@ -486,7 +589,7 @@ function readLockFile() {
   }
 }
 
-/** Write aipm_profile.lock.json. */
+/** Write aipm_profile.lock.json after install/update (pins what was installed). */
 function writeLockFile(lock) {
   const data = {
     lockfileVersion: LOCKFILE_VERSION,
@@ -516,29 +619,54 @@ function mergeAndWriteLock(oldLock, updates, desiredSkills, desiredRules) {
 }
 
 /**
- * Resolve artifact: use lock if valid (package exists at locked registry), else findRegistryForArtifact.
- * Returns { registryRef, version }.
+ * aipm_profile 声明要哪些包及版本约束；aipm_profile.lock 锁定具体 registry + 版本。
+ * 1) 无 lock 条目：按配置在 registries 中解析并安装，随后写入 lock。
+ * 2) 有 lock 条目：先按配置解析「当前约束」；与 lock 比对 registry + 解析后版本。
+ *    - 配置为 latest/省略版本：不比对「与当前 latest 是否相等」，直接以 lock 为准（多人一致）。
+ *    - 配置为 ^ / 精确版本：registry 与 lock 一致且 lock 中版本仍满足该 semver 约束时沿用 lock（同 npm 在兼容范围内保留 lock）；否则按配置解析并刷新 lock。
+ * 3) lock 记录失效（拉取失败等）时回退为按配置解析。
  */
 async function resolveArtifactWithLock(lock, registries, packageName, kind, requestedVersion) {
   const kindKey = kind === 'skill' ? 'skills' : 'rules'
   const locked = lock?.[kindKey]?.[packageName]
-  if (locked?.version && locked?.registry) {
+  const wantLatest = !requestedVersion || requestedVersion === 'latest'
+  const kindLabel = kind === 'skill' ? 'Skill' : 'Rule'
+
+  async function resolveFromLockEntry() {
+    if (!locked?.version || !locked?.registry) return null
     const resolved = resolveRegistryRef(locked.registry)
     try {
       const registry = await fetchRegistry(resolved)
       const index = registry?.[kind === 'skill' ? 'packages' : 'rules']
       const item = index?.[packageName]
-      if (item) {
-        const kindLabel = kind === 'skill' ? 'Skill' : 'Rule'
-        const version = resolveVersionFromItem(item, locked.version, kindLabel, packageName)
-        return { registryRef: resolved, version, fromLock: true }
-      }
+      if (!item) return null
+      const version = resolveVersionFromItem(item, locked.version, kindLabel, packageName)
+      return { registryRef: resolved, version }
     } catch {
-      /* fall through to fresh resolve */
+      return null
     }
   }
-  const result = await findRegistryForArtifact(registries, packageName, kind, requestedVersion)
-  return { ...result, fromLock: false }
+
+  if (wantLatest) {
+    const fromLock = await resolveFromLockEntry()
+    if (fromLock) return fromLock
+    return findRegistryForArtifact(registries, packageName, kind, requestedVersion)
+  }
+
+  const fromProfile = await findRegistryForArtifact(registries, packageName, kind, requestedVersion)
+  if (!locked?.version || !locked?.registry) return fromProfile
+
+  const lockRefNorm = normalizeRegistryRefForCompare(locked.registry)
+  const profileRefNorm = normalizeRegistryRefForCompare(fromProfile.registryRef)
+  const registryMatch = lockRefNorm === profileRefNorm
+  const semverOk = lockedVersionSatisfiesRequest(locked.version, requestedVersion)
+
+  if (registryMatch && semverOk) {
+    const fromLock = await resolveFromLockEntry()
+    if (fromLock) return fromLock
+  }
+
+  return fromProfile
 }
 
 /** Read config from package.json aipm or aipm_profile.json (project root). */
@@ -763,11 +891,15 @@ async function ensureLocalIdeConfigured(args = []) {
   stripIdeFromSharedProfileFile()
 }
 
-/** Read JSON: remote 先查 bundle 缓存，命中则直接用；否则拉取并写入缓存。 */
-async function readJsonResource(baseRef, relativePath) {
+/**
+ * Read JSON: remote 先查 bundle 缓存，命中则直接用；否则拉取并写入缓存。
+ * @param {{ bypassCache?: boolean }} [options] bypassCache=true 时强制重新拉取（用于 search 等需最新 registry.json 的场景）。
+ */
+async function readJsonResource(baseRef, relativePath, options = {}) {
+  const bypassCache = options.bypassCache === true
   if (isUrl(baseRef)) {
     const cachePath = bundleCachePath(baseRef, relativePath)
-    if (existsSync(cachePath)) {
+    if (!bypassCache && existsSync(cachePath)) {
       return JSON.parse(readFileSync(cachePath, 'utf-8'))
     }
     const url = appendRegistryToken(joinUrl(baseRef, relativePath))
@@ -825,8 +957,8 @@ function normalizeArtifactMap(value) {
   return {}
 }
 
-async function fetchRegistry(baseRef) {
-  return await readJsonResource(baseRef, 'registry.json')
+async function fetchRegistry(baseRef, options = {}) {
+  return await readJsonResource(baseRef, 'registry.json', options)
 }
 
 /** 按 registries 顺序查找包含该 package 的 registry，返回 { registryRef, registry, version }。 */
@@ -975,10 +1107,9 @@ function resolveArtifactPath(registry, kind, packageName, requestedVersion) {
 function resolveVersionFromItem(item, requested, kindLabel, name) {
   if (!requested || requested === 'latest') return item.latest
   if (requested.startsWith('^')) {
-    const major = requested.slice(1).split('.')[0]
-    const compatible = [...(item.versions ?? [])].filter((v) => v.startsWith(`${major}.`)).sort().at(-1)
-    if (!compatible) throw new Error(`No compatible version for ${kindLabel} ${name}: ${requested}`)
-    return compatible
+    const best = maxVersionSatisfyingCaret(item.versions ?? [], requested)
+    if (!best) throw new Error(`No compatible version for ${kindLabel} ${name}: ${requested}`)
+    return best
   }
   if (!(item.versions ?? []).includes(requested)) {
     throw new Error(`${kindLabel} ${name}@${requested} was not found in registry`)
@@ -997,17 +1128,11 @@ function resolveVersion(index, name, requested, kindLabel) {
   }
 
   if (requested.startsWith('^')) {
-    const major = requested.slice(1).split('.')[0]
-    const compatible = [...(item.versions ?? [])]
-      .filter((version) => version.startsWith(`${major}.`))
-      .sort()
-      .at(-1)
-
-    if (!compatible) {
+    const best = maxVersionSatisfyingCaret(item.versions ?? [], requested)
+    if (!best) {
       throw new Error(`No compatible version for ${kindLabel} ${name}: ${requested}`)
     }
-
-    return compatible
+    return best
   }
 
   if (!(item.versions ?? []).includes(requested)) {
@@ -1434,25 +1559,23 @@ async function cmdPull(...args) {
 
   writeLockFile(newLock)
 
-  if (config.profile) {
-    const desiredSkillNames = new Set(Object.keys(skills).map((n) => registryPathToInstallName(n)))
-    const desiredRuleNames = new Set(Object.keys(rules).map((n) => registryPathToInstallName(n)))
-    for (const installName of listInstalledDirs(installPaths.skillInstallDir)) {
-      if (!desiredSkillNames.has(installName)) {
-        const dir = join(installPaths.skillInstallDir, installName)
-        if (readInstalledVersion(dir)) {
-          rmSync(dir, { recursive: true, force: true })
-          console.log(`Removed ${installName} (not in profile)`)
-        }
+  const desiredSkillNames = new Set(Object.keys(skills).map((n) => registryPathToInstallName(n)))
+  const desiredRuleNames = new Set(Object.keys(rules).map((n) => registryPathToInstallName(n)))
+  for (const installName of listInstalledDirs(installPaths.skillInstallDir)) {
+    if (!desiredSkillNames.has(installName)) {
+      const dir = join(installPaths.skillInstallDir, installName)
+      if (readInstalledVersion(dir)) {
+        rmSync(dir, { recursive: true, force: true })
+        console.log(`Removed ${installName} (not in declared skills)`)
       }
     }
-    for (const installName of listInstalledDirs(installPaths.ruleInstallDir)) {
-      if (!desiredRuleNames.has(installName)) {
-        const dir = join(installPaths.ruleInstallDir, installName)
-        if (readInstalledVersion(dir)) {
-          rmSync(dir, { recursive: true, force: true })
-          console.log(`Removed ${installName} (not in profile)`)
-        }
+  }
+  for (const installName of listInstalledDirs(installPaths.ruleInstallDir)) {
+    if (!desiredRuleNames.has(installName)) {
+      const dir = join(installPaths.ruleInstallDir, installName)
+      if (readInstalledVersion(dir)) {
+        rmSync(dir, { recursive: true, force: true })
+        console.log(`Removed ${installName} (not in declared rules)`)
       }
     }
   }
@@ -2687,50 +2810,147 @@ async function cmdUnpublishRule(name) {
 }
 
 
+function matchesSearchQuery(name, item, query) {
+  const q = String(query ?? '').trim()
+  if (!q) return true
+  return (
+    name.includes(q) ||
+    Boolean(item.description?.includes(q)) ||
+    Boolean(item.tags?.some((tag) => String(tag).includes(q)))
+  )
+}
+
+/** Human-readable label for a registry ref (URL normalized, local path prefer relative to ROOT). */
+function searchFormatRegistryLabel(ref) {
+  const resolved = resolveRegistryRef(ref)
+  if (isUrl(resolved)) {
+    return `${resolved.replace(/\/+$/, '')}/`
+  }
+  const abs = resolveLocalBase(ref)
+  const rel = relative(ROOT, abs)
+  return rel && rel !== abs ? rel : abs
+}
+
+function searchFormatVersionLine(item) {
+  const versions =
+    Array.isArray(item.versions) && item.versions.length ? item.versions.join(' · ') : null
+  const latest =
+    item.latest != null && String(item.latest).trim() !== '' ? String(item.latest).trim() : null
+  const parts = []
+  if (latest) parts.push(`latest ${latest}`)
+  if (versions) parts.push(`versions ${versions}`)
+  return parts.length ? parts.join('    ') : '—'
+}
+
+function searchPrintDescription(desc) {
+  if (!desc || !String(desc).trim()) return
+  const words = String(desc).trim().split(/\s+/)
+  const prefix = '        '
+  const maxLen = 72
+  let line = ''
+  for (const w of words) {
+    const next = line ? `${line} ${w}` : w
+    if (next.length > maxLen && line) {
+      console.log(prefix + line)
+      line = w
+    } else {
+      line = next
+    }
+  }
+  if (line) console.log(prefix + line)
+}
+
 async function cmdSearch(query = '') {
   const config = readConfigOrDefault()
   const registries = getRegistries(config)
-  const registry = await fetchMergedRegistry(registries)
+  const q = String(query ?? '').trim()
 
-  const skillResults = Object.entries(registry.packages ?? {}).filter(([name, item]) => {
-    return (
-      !query ||
-      name.includes(query) ||
-      item.description?.includes(query) ||
-      item.tags?.some((tag) => tag.includes(query))
-    )
-  })
-  const ruleResults = Object.entries(registry.rules ?? {}).filter(([name, item]) => {
-    return (
-      !query ||
-      name.includes(query) ||
-      item.description?.includes(query) ||
-      item.tags?.some((tag) => tag.includes(query))
-    )
-  })
+  const hits = []
+  const fetchErrors = []
 
-  if (!skillResults.length && !ruleResults.length) {
-    console.log('no matching skills/rules found')
-    return
-  }
-
-  if (skillResults.length) {
-    console.log('skills:')
-    for (const [name, item] of skillResults) {
-      console.log(`- ${name} (latest: ${item.latest})`)
-      if (item.description) {
-        console.log(`  ${item.description}`)
+  for (const ref of registries) {
+    const label = searchFormatRegistryLabel(ref)
+    const resolved = resolveRegistryRef(ref)
+    try {
+      const reg = await fetchRegistry(resolved, { bypassCache: true })
+      const skills = Object.entries(reg?.packages ?? {})
+        .filter(([name, item]) => matchesSearchQuery(name, item, q))
+        .sort(([a], [b]) => a.localeCompare(b))
+      const rules = Object.entries(reg?.rules ?? {})
+        .filter(([name, item]) => matchesSearchQuery(name, item, q))
+        .sort(([a], [b]) => a.localeCompare(b))
+      if (skills.length || rules.length) {
+        hits.push({ label, skills, rules })
       }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      fetchErrors.push({ label, message })
     }
   }
 
-  if (ruleResults.length) {
-    console.log('\nrules:')
-    for (const [name, item] of ruleResults) {
-      console.log(`- ${name} (latest: ${item.latest})`)
-      if (item.description) {
-        console.log(`  ${item.description}`)
+  if (!hits.length) {
+    console.log(
+      q ? `no matching skills/rules found for "${q}"` : 'no skills/rules found in any reachable registry',
+    )
+    if (fetchErrors.length) {
+      console.log('')
+      console.log('Unreachable registries:')
+      for (const { label, message } of fetchErrors) {
+        console.log(`  · ${label}`)
+        console.log(`    ${message}`)
       }
+    }
+    return
+  }
+
+  const bannerW = 58
+  console.log('─'.repeat(bannerW))
+  console.log(`  aipm search${q ? ` · "${q}"` : ' · (all packages)'}`)
+  console.log(`  ${hits.length} registry source${hits.length === 1 ? '' : 's'} with matches`)
+  console.log('─'.repeat(bannerW))
+  console.log('')
+
+  for (let i = 0; i < hits.length; i++) {
+    const { label, skills, rules } = hits[i]
+    console.log(`  ▸ ${label}`)
+    console.log('')
+
+    if (skills.length) {
+      console.log('    Skills')
+      console.log(`    ${'─'.repeat(32)}`)
+      for (const [name, item] of skills) {
+        console.log(`    ${name}`)
+        console.log(`        ${searchFormatVersionLine(item)}`)
+        searchPrintDescription(item.description)
+      }
+      console.log('')
+    }
+
+    if (rules.length) {
+      console.log('    Rules')
+      console.log(`    ${'─'.repeat(32)}`)
+      for (const [name, item] of rules) {
+        console.log(`    ${name}`)
+        console.log(`        ${searchFormatVersionLine(item)}`)
+        searchPrintDescription(item.description)
+      }
+      console.log('')
+    }
+
+    if (i < hits.length - 1) {
+      console.log(`  ${'·'.repeat(42)}`)
+      console.log('')
+    }
+  }
+
+  if (fetchErrors.length) {
+    console.log('─'.repeat(bannerW))
+    console.log(
+      `  ${fetchErrors.length} registry source${fetchErrors.length === 1 ? '' : 's'} could not be read`,
+    )
+    for (const { label, message } of fetchErrors) {
+      console.log(`    · ${label}`)
+      console.log(`      ${message}`)
     }
   }
 }
@@ -2748,7 +2968,8 @@ Usage:
 Primary commands:
   init [--registry PATH]   Create aipm_profile.json in project root (interactive)
   install [--on-conflict=..] [--ide=cursor|codex|trae|windsurf]
-                          Install declared skills/rules (writes aipm_profile.lock.json for reproducibility)
+                          Install declared skills/rules; prune dirs not in declared set
+                          Profile + lock: latest→lock; same registry + semver-satisfied by lock (incl. ^)→lock; else resolve + refresh lock
                           Uses .aipm/profile.json for IDE; creates it on first run if missing
   list                    List declared and installed skills/rules
   update [name] [--on-conflict=..]
@@ -2774,7 +2995,7 @@ Additional commands:
   install-rule <name> [version]   Add rule to config and install from registry
   uninstall-skill <name>  Remove skill from config and IDE
   uninstall-rule <name>   Remove rule from config and IDE
-  search [keyword]        Search skills and rules in registry
+  search [keyword]        Search all registries (per-source, all versions; fresh registry.json, no cache)
   help, --help, -h        Show this help
 
 Config keys:
