@@ -9,3 +9,6 @@
 
 # 多个仓库：逗号分隔，或写多行 registries=
 # registries=
+
+# 发布后是否把 aipm_profile.json 里对应包版本写成刚发布的版本：ask（默认）| yes | no
+# publish-update-profile=ask

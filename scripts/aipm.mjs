@@ -44,6 +44,64 @@ function parseSemver(v) {
   return m ? [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)] : null
 }
 
+function maxSemverAmongVersions(versions) {
+  if (!versions?.length) return null
+  let best = versions[0]
+  for (let i = 1; i < versions.length; i++) {
+    const v = versions[i]
+    const c = semverCompare(v, best)
+    if (c === 1) best = v
+    if (c === null && String(v) > String(best)) best = v
+  }
+  return best
+}
+
+/** publish：待发布版本须高于仓库已有 latest（semver）；新包无记录则任意合法版本。 */
+function assertPublishVersionVsRegistry(registry, kind, registryPath, newVersion) {
+  const registryKey = ARTIFACT_KIND[kind].registryKey
+  const item = registry[registryKey]?.[registryPath]
+  if (!item) return
+  const existingVersions = item.versions ?? []
+  if (existingVersions.includes(newVersion)) {
+    throw new Error(`Version ${newVersion} is already published for '${registryPath}'.`)
+  }
+  if (!existingVersions.length) return
+  const latest =
+    item.latest && existingVersions.includes(item.latest)
+      ? item.latest
+      : maxSemverAmongVersions(existingVersions)
+  if (!latest) return
+  const cmp = semverCompare(newVersion, latest)
+  if (cmp === null) {
+    throw new Error(
+      `Cannot compare publish version "${newVersion}" with registry latest "${latest}". Use semver x.y.z (e.g. 1.2.3).`,
+    )
+  }
+  if (cmp !== 1) {
+    throw new Error(
+      `Publish version "${newVersion}" must be greater than registry latest "${latest}" (semver).`,
+    )
+  }
+}
+
+function readPublishVersionFromArtifact(srcDir) {
+  const pkgPath = join(srcDir, 'package.json')
+  if (!existsSync(pkgPath)) {
+    throw new Error('package.json is required')
+  }
+  let pkg
+  try {
+    pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+  } catch (e) {
+    throw new Error(`package.json invalid: ${e.message}`)
+  }
+  const v = pkg?.version
+  if (v == null || String(v).trim() === '') {
+    throw new Error('package.json "version" is required')
+  }
+  return String(v).trim()
+}
+
 function parseConflictMode(args = []) {
   const byFlag = args.find((a) => a.startsWith('--on-conflict='))
   const mode = byFlag ? byFlag.split('=')[1] : 'ask'
@@ -169,6 +227,8 @@ function parseAipmrc(text) {
       for (const part of val.split(',').map((s) => s.trim()).filter(Boolean)) {
         regList.push(part.replace(/\/+$/, '') + '/')
       }
+    } else if (rawKey === 'publishupdateprofile') {
+      if (val) out.publishUpdateProfile = val.trim().toLowerCase()
     }
   }
   if (regList.length) out.registries = regList
@@ -292,6 +352,7 @@ function defaultConfig() {
   return {
     registry: null,
     registries: null,
+    publishUpdateProfile: undefined,
     skills: {},
     rules: {},
   }
@@ -501,6 +562,10 @@ function mergeConfig(base, overrides) {
     registry: overrides.registry ?? base.registry,
     registries: overrides.registries ?? base.registries,
     profile: overrides.profile ?? base.profile,
+    publishUpdateProfile:
+      overrides.publishUpdateProfile !== undefined
+        ? overrides.publishUpdateProfile
+        : base.publishUpdateProfile,
     skills: { ...(base.skills ?? {}), ...(overrides.skills ?? {}) },
     rules: { ...(base.rules ?? {}), ...(overrides.rules ?? {}) },
   }
@@ -511,6 +576,68 @@ function stripIdeFromObject(obj) {
   if (!obj || typeof obj !== 'object') return {}
   const { ide: _drop, ...rest } = obj
   return rest
+}
+
+/** publish 成功后是否把 skills/rules 版本写回 aipm_profile：ask | yes | no */
+function normalizePublishUpdateProfileMode(raw) {
+  if (raw == null || raw === '') return null
+  const s = String(raw).trim().toLowerCase()
+  if (s === 'ask' || s === 'yes' || s === 'no') return s
+  return null
+}
+
+/** 优先级：CLI --publish-update-profile= > 项目配置 > ~/.aipmrc > 默认 ask */
+function resolvePublishUpdateProfileMode(config, args = []) {
+  const eq = args.find((a) => a.startsWith('--publish-update-profile='))
+  if (eq) {
+    const m = normalizePublishUpdateProfileMode(eq.slice('--publish-update-profile='.length))
+    if (m) return m
+  }
+  const fromProj = normalizePublishUpdateProfileMode(config.publishUpdateProfile)
+  if (fromProj) return fromProj
+  const fromGlobal = normalizePublishUpdateProfileMode(readGlobalConfig().publishUpdateProfile)
+  if (fromGlobal) return fromGlobal
+  return 'ask'
+}
+
+/** 将成功发布的版本写回 aipm_profile.json（按 publishUpdateProfile / 询问） */
+async function applyPublishProfileVersionSync(updates, args) {
+  if (!updates.length) return
+  const config = readConfig()
+  const mode = resolvePublishUpdateProfileMode(config, args)
+  let doWrite = false
+  if (mode === 'yes') {
+    doWrite = true
+  } else if (mode === 'no') {
+    console.log('[publish] Skipped updating aipm_profile.json (publish-update-profile=no).')
+    return
+  } else {
+    if (!process.stdin.isTTY) {
+      console.log(
+        '[publish] publish-update-profile=ask in non-interactive shell: skipped aipm_profile.json. Use --publish-update-profile=yes|no, or set publish-update-profile in aipm_profile.json / ~/.aipmrc.',
+      )
+      return
+    }
+    const lines = updates.map((u) => `    ${u.kind} ${u.registryPath}@${u.version}`).join('\n')
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+    const ans = (
+      await question(rl, `Update aipm_profile.json with published version(s)?\n${lines}\n[y/N]`, 'n')
+    ).trim()
+    rl.close()
+    doWrite = /^y(es)?$/i.test(ans)
+    if (!doWrite) {
+      console.log('[publish] aipm_profile.json left unchanged.')
+      return
+    }
+  }
+  const cfg = readConfig()
+  for (const u of updates) {
+    const key = u.kind === 'skill' ? 'skills' : 'rules'
+    cfg[key] ??= {}
+    cfg[key][u.registryPath] = u.version
+  }
+  writeConfig(cfg)
+  console.log(`[publish] Updated ${relative(ROOT, PROFILE_CONFIG_FILE)} (published version(s)).`)
 }
 
 function readLocalIdeProfile() {
@@ -1048,8 +1175,8 @@ function parseArtifactFrontmatter(content) {
   return { name, description }
 }
 
-/** Validate artifact before publish. Throws on failure. */
-function validatePublishArtifact(srcDir, kindConfig, registryPath, version) {
+/** Validate artifact before publish（版本以 package.json 为准，不与 aipm_profile 对齐）。 */
+function validatePublishArtifact(srcDir, kindConfig, registryPath) {
   const markerFile = kindConfig.markerFile
   const markerPath = join(srcDir, markerFile)
   if (!existsSync(markerPath)) {
@@ -1079,10 +1206,8 @@ function validatePublishArtifact(srcDir, kindConfig, registryPath, version) {
       `package.json "name" must be "${registryPath}", got "${pkg?.name ?? '(missing)'}"`,
     )
   }
-  if (pkg?.version !== version) {
-    throw new Error(
-      `package.json "version" must be "${version}", got "${pkg?.version ?? '(missing)'}"`,
-    )
+  if (pkg?.version == null || String(pkg.version).trim() === '') {
+    throw new Error('package.json "version" is required')
   }
   const files = Array.isArray(pkg?.files) ? pkg.files : []
   if (!files.length) {
@@ -1894,14 +2019,10 @@ async function cmdPush(...args) {
     }
   }
 
+  const profileVersionSyncQueue = []
+
   function pushArtifact(kind, installName, registryPath, version, registryRef, registryBase, registry, quiet = false) {
     const kindConfig = ARTIFACT_KIND[kind]
-    const existingVersions = registry[kindConfig.registryKey]?.[registryPath]?.versions ?? []
-    if (existingVersions.includes(version)) {
-      throw new Error(
-        `Version ${version} is already published for '${registryPath}'. Bump version (e.g. 1.0.1) in package.json to publish changes.`,
-      )
-    }
 
     const ideDir = kind === 'skill' ? installPaths.skillInstallDir : installPaths.ruleInstallDir
     const srcDir = join(ideDir, installName)
@@ -1911,7 +2032,8 @@ async function cmdPush(...args) {
       throw new Error(`${kind} ${installName} not found in ${ideDir}`)
     }
 
-    validatePublishArtifact(srcDir, kindConfig, registryPath, version)
+    validatePublishArtifact(srcDir, kindConfig, registryPath)
+    assertPublishVersionVsRegistry(registry, kind, registryPath, version)
 
     const markerFile = kindConfig.markerFile
     const allFiles = listFilesRecursive(srcDir, srcDir)
@@ -1983,11 +2105,7 @@ async function cmdPush(...args) {
     writeFileSync(registryJsonPath, registryStr, 'utf-8')
     writeToBundleCache(registryRef, 'registry.json', registryStr, false)
 
-    const config = readConfig()
-    const configKey = kind === 'skill' ? 'skills' : 'rules'
-    config[configKey] ??= {}
-    config[configKey][registryPath] = version
-    writeConfig(config)
+    profileVersionSyncQueue.push({ kind, registryPath, version })
 
     if (verbose) {
       console.log(`  ${relative(ROOT, srcDir)} -> ${relative(ROOT, destDir)}`)
@@ -2021,14 +2139,23 @@ async function cmdPush(...args) {
         )
       }
       const registry = await getRegistryForPush(registryRef)
-      version = config.skills?.[packageName] ?? skills[packageName] ?? '1.0.0'
+      const skillSrc = join(installPaths.skillInstallDir, installName)
+      if (!existsSync(skillSrc)) {
+        throw new Error(`skill ${installName} not found in ${installPaths.skillInstallDir}`)
+      }
+      validatePublishArtifact(skillSrc, ARTIFACT_KIND.skill, packageName)
+      version = readPublishVersionFromArtifact(skillSrc)
+      assertPublishVersionVsRegistry(registry, 'skill', packageName, version)
       if (isUrl(registryRef)) {
-        await publishToRemoteRegistry('skill', packageName, version, registryRef, { quiet: publishQuiet })
+        await publishToRemoteRegistry('skill', packageName, registryRef, {
+          quiet: publishQuiet,
+          profileVersionSyncQueue,
+        })
       } else {
         const registryBase = resolveLocalBase(registryRef)
         const isNew = !registry.packages?.[packageName]
         if (isNew) {
-          await addArtifactToRegistry('skill', packageName, version, args, publishQuiet)
+          await addArtifactToRegistry('skill', packageName, args, publishQuiet, profileVersionSyncQueue)
         } else {
           const { registryPath, installName: inName } = resolveArtifactPath(
             registry,
@@ -2064,14 +2191,23 @@ async function cmdPush(...args) {
         )
       }
       const registry = await getRegistryForPush(registryRef)
-      version = config.rules?.[packageName] ?? rules[packageName] ?? '1.0.0'
+      const ruleSrc = join(installPaths.ruleInstallDir, installName)
+      if (!existsSync(ruleSrc)) {
+        throw new Error(`rule ${installName} not found in ${installPaths.ruleInstallDir}`)
+      }
+      validatePublishArtifact(ruleSrc, ARTIFACT_KIND.rule, packageName)
+      version = readPublishVersionFromArtifact(ruleSrc)
+      assertPublishVersionVsRegistry(registry, 'rule', packageName, version)
       if (isUrl(registryRef)) {
-        await publishToRemoteRegistry('rule', packageName, version, registryRef, { quiet: publishQuiet })
+        await publishToRemoteRegistry('rule', packageName, registryRef, {
+          quiet: publishQuiet,
+          profileVersionSyncQueue,
+        })
       } else {
         const registryBase = resolveLocalBase(registryRef)
         const isNew = !registry.rules?.[packageName]
         if (isNew) {
-          await addArtifactToRegistry('rule', packageName, version, args, publishQuiet)
+          await addArtifactToRegistry('rule', packageName, args, publishQuiet, profileVersionSyncQueue)
         } else {
           const { registryPath, installName: inName } = resolveArtifactPath(
             registry,
@@ -2096,6 +2232,7 @@ async function cmdPush(...args) {
   }
 
   printPublishResultsSummary(results)
+  await applyPublishProfileVersionSync(profileVersionSyncQueue, args)
   const failCount = results.filter((r) => !r.ok).length
   if (failCount) {
     process.exitCode = 1
@@ -2154,8 +2291,8 @@ description: "${desc}"
   return srcDir
 }
 
-/** Publish artifact to remote HTTP registry (POST /api/publish). */
-async function publishToRemoteRegistry(kind, packageName, version, registryUrl, options = {}) {
+/** Publish artifact to remote HTTP registry (POST /api/publish）。版本以包内 package.json 为准。 */
+async function publishToRemoteRegistry(kind, packageName, registryUrl, options = {}) {
   const kindConfig = ARTIFACT_KIND[kind]
   const config = readConfig()
   const installPaths = getInstallPaths(config)
@@ -2170,7 +2307,8 @@ async function publishToRemoteRegistry(kind, packageName, version, registryUrl, 
   }
 
   const registryPath = packageName
-  validatePublishArtifact(srcDir, kindConfig, registryPath, version)
+  validatePublishArtifact(srcDir, kindConfig, registryPath)
+  const version = readPublishVersionFromArtifact(srcDir)
 
   const allFiles = listFilesRecursive(srcDir, srcDir).filter(
     (f) => f !== '.aipm' && f !== 'files.json',
@@ -2249,18 +2387,17 @@ async function publishToRemoteRegistry(kind, packageName, version, registryUrl, 
     throw new Error(hint || `Publish failed (${res.status})`)
   }
 
-  const configKey = kind === 'skill' ? 'skills' : 'rules'
-  config[configKey] ??= {}
-  config[configKey][registryPath] = version
-  writeConfig(config)
+  if (options.profileVersionSyncQueue) {
+    options.profileVersionSyncQueue.push({ kind, registryPath, version })
+  }
 
   if (!options.quiet) {
     console.log(`Published ${kind} ${registryPath}@${version} to ${base}`)
   }
 }
 
-/** Add artifact (skill or rule) from IDE to Registry. */
-async function addArtifactToRegistry(kind, name, version, args, quiet = false) {
+/** Add artifact (skill or rule) from IDE to Registry。版本以包内 package.json 为准。 */
+async function addArtifactToRegistry(kind, name, args, quiet = false, profileVersionSyncQueue = null) {
   const kindConfig = ARTIFACT_KIND[kind]
   const config = readConfig()
   const installName =
@@ -2304,7 +2441,8 @@ async function addArtifactToRegistry(kind, name, version, args, quiet = false) {
 
   validateRegistryPath(registryPath, kind === 'skill' ? 'Skill' : 'Rule')
 
-  validatePublishArtifact(srcDir, kindConfig, registryPath, version)
+  validatePublishArtifact(srcDir, kindConfig, registryPath)
+  const version = readPublishVersionFromArtifact(srcDir)
 
   const allFiles = listFilesRecursive(srcDir, srcDir)
   if (!allFiles.includes(kindConfig.markerFile)) {
@@ -2325,12 +2463,7 @@ async function addArtifactToRegistry(kind, name, version, args, quiet = false) {
   const registryJsonPath = join(registryBase, 'registry.json')
   const registry = JSON.parse(readFileSync(registryJsonPath, 'utf-8'))
   const registryKey = kindConfig.registryKey
-  const existingVersions = registry[registryKey]?.[registryPath]?.versions ?? []
-  if (existingVersions.includes(version)) {
-    throw new Error(
-      `Version ${version} is already published for '${registryPath}'. Bump version (e.g. 1.0.1) in package.json to publish changes.`,
-    )
-  }
+  assertPublishVersionVsRegistry(registry, kind, registryPath, version)
   if (existsSync(destDir)) {
     throw new Error(
       `'${registryPath}@${version}' already exists in registry. Bump version (e.g. 1.0.1) to publish.`,
@@ -2387,10 +2520,14 @@ async function addArtifactToRegistry(kind, name, version, args, quiet = false) {
   writeFileSync(registryJsonPath, registryStr, 'utf-8')
   writeToBundleCache(registryRef, 'registry.json', registryStr, false)
 
-  const configKey = kind === 'skill' ? 'skills' : 'rules'
-  config[configKey] ??= {}
-  config[configKey][registryPath] = version
-  writeConfig(config)
+  if (profileVersionSyncQueue) {
+    profileVersionSyncQueue.push({ kind, registryPath, version })
+  } else {
+    const configKey = kind === 'skill' ? 'skills' : 'rules'
+    config[configKey] ??= {}
+    config[configKey][registryPath] = version
+    writeConfig(config)
+  }
 
   if (!quiet) {
     console.log(`Added ${kind} ${registryPath}@${version} to registry`)
@@ -2616,8 +2753,9 @@ Primary commands:
   list                    List declared and installed skills/rules
   update [name] [--on-conflict=..]
                           Update one artifact or all artifacts
-  publish [name] [--registry PATH] [-v]
+  publish [name] [--registry PATH] [-v] [--publish-update-profile=ask|yes|no]
                           Sync to Registry (default: package sourceRegistry; -v verbose)
+                          After success: sync skills/rules versions in aipm_profile.json (see publish-update-profile)
   doctor                  Check config, registry, and local installs
 
 Create new packages (interactive):
@@ -2640,14 +2778,15 @@ Additional commands:
   help, --help, -h        Show this help
 
 Config keys:
-  aipm_profile.json       Synced project config: registry, registries, profile, skills, rules (no ide)
+  aipm_profile.json       Synced project config: registry, registries, profile, skills, rules, publish-update-profile (no ide)
   .aipm/profile.json      Local only: ide (and future per-machine keys). Created on first install if missing.
-  ~/.aipmrc                Global (npmrc-style): registry, registries (comma or repeated lines), registry-token; # comments
+  ~/.aipmrc                Global (npmrc-style): registry, registries, registry-token, publish-update-profile=ask|yes|no; # comments
   package.json aipm.*     Optional; ide in package.json is treated like legacy and not written back to profile
   package.json aipm.sourceRegistry         Package source for publish ("default" or path)
   Default registry is http://localhost:9005/ (aipm-registry); project + global + default are merged in order.
   profile                 Current profile (loads skills/rules from profiles/<profile>.json)
   skills, rules           Dependencies (npm-style: name -> version). Override profile.
+  publishUpdateProfile    (JSON) or publish-update-profile (.aipmrc): after publish, ask | yes | no to update aipm_profile skills/rules versions
   ide                     Set via .aipm/profile.json; override once with --ide= on install/update/etc.
 
 Bundle cache (~/.aipm/cache): Remote reads are cached; publish backs up to cache.
