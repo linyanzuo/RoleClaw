@@ -602,6 +602,51 @@ function getRegistries(config) {
   return combined
 }
 
+/**
+ * 与 getRegistries 相同顺序与去重规则，但保留来源标签（project → global → default）。
+ * 用于 registry 命令输出优先级。
+ */
+function getRegistriesAnnotated(config) {
+  let projectList = []
+  const multi = config.registries
+  if (multi != null) {
+    const asArray = Array.isArray(multi) ? multi : [multi]
+    projectList = asArray.filter(Boolean)
+  }
+  if (!projectList.length && config.registry) {
+    projectList = [config.registry]
+  }
+  const globalCfg = readGlobalConfig()
+  let globalList = []
+  const gMulti = globalCfg?.registries
+  if (gMulti != null) {
+    globalList = (Array.isArray(gMulti) ? gMulti : [gMulti]).filter(Boolean)
+  }
+  if (!globalList.length && globalCfg?.registry) {
+    globalList = [globalCfg.registry]
+  }
+
+  const candidates = [
+    ...projectList.map((raw) => ({ raw, tier: 'project' })),
+    ...globalList.map((raw) => ({ raw, tier: 'global' })),
+  ]
+  const seen = new Set()
+  const out = []
+  for (const { raw, tier } of candidates) {
+    const ref = resolveRegistryRef(raw)
+    const key = isUrl(ref) ? normalizeRegistryRefForCompare(ref) : String(ref)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ ref, tier })
+  }
+  const defaultRef = defaultRegistryRef()
+  const defaultKey = normalizeRegistryRefForCompare(defaultRef)
+  if (!out.some((e) => normalizeRegistryRefForCompare(e.ref) === defaultKey)) {
+    out.push({ ref: defaultRef, tier: 'default' })
+  }
+  return out
+}
+
 /** 默认 publish 目标：第一个可用的 registry（本地路径存在 或 HTTP URL）。 */
 function getDefaultPublishRegistry(config) {
   for (const ref of getRegistries(config)) {
@@ -1068,6 +1113,50 @@ function normalizeArtifactMap(value) {
 
 async function fetchRegistry(baseRef, options = {}) {
   return await readJsonResource(baseRef, 'registry.json', options)
+}
+
+/**
+ * 将 registry.json 写入 ~/.aipm/cache：HTTP(S) 强制重新拉取；本地路径从磁盘读入再写入 published 子目录缓存。
+ */
+async function refreshRegistryJsonCache(registryRef) {
+  const baseRef = resolveRegistryRef(registryRef)
+  if (isUrl(baseRef)) {
+    await fetchRegistry(baseRef, { bypassCache: true })
+    return
+  }
+  const abs = join(resolveLocalBase(baseRef), 'registry.json')
+  if (!existsSync(abs)) {
+    throw new Error(`registry.json not found at ${abs}`)
+  }
+  const data = JSON.parse(readFileSync(abs, 'utf-8'))
+  writeToBundleCache(baseRef, 'registry.json', data, true)
+}
+
+function wantsSkipRegistryRefresh(args = []) {
+  return args.includes('--skip-registry-refresh')
+}
+
+function wantsVerboseFromInstallArgs(args = []) {
+  return args.includes('-v') || args.includes('--verbose')
+}
+
+/**
+ * install/update 前刷新各源的 registry.json 索引，避免仅用旧缓存导致「找不到包」。
+ * 失败则静默沿用原缓存，便于离线仍可按旧索引安装；用 --skip-registry-refresh 可完全跳过网络刷新。
+ */
+async function refreshRegistriesIndexCacheBestEffort(registries, options = {}) {
+  const { verbose = false } = options
+  for (const ref of registries) {
+    const resolved = resolveRegistryRef(ref)
+    try {
+      await refreshRegistryJsonCache(ref)
+    } catch (e) {
+      if (verbose) {
+        const msg = e instanceof Error ? e.message : String(e)
+        console.log(`[aipm] registry index refresh skipped (${resolved}): ${msg}`)
+      }
+    }
+  }
 }
 
 /** 按 registries 顺序查找包含该 package 的 registry，返回 { registryRef, registry, version }。 */
@@ -1670,6 +1759,11 @@ async function cmdPull(...args) {
   const config = readConfig()
   const { skills, rules } = await resolveDesiredArtifacts(config)
   const registries = getRegistries(config)
+  if (!wantsSkipRegistryRefresh(args)) {
+    await refreshRegistriesIndexCacheBestEffort(registries, {
+      verbose: wantsVerboseFromInstallArgs(args),
+    })
+  }
   const installPaths = getInstallPaths(config)
   const conflictState = { mode: parseConflictMode(args) }
   const explicitSkills = new Set(Object.keys(config.skills ?? {}))
@@ -1785,6 +1879,11 @@ async function cmdUpdate(name, ...args) {
   const config = readConfig()
   const { skills, rules } = await resolveDesiredArtifacts(config)
   const registries = getRegistries(config)
+  if (!wantsSkipRegistryRefresh(args)) {
+    await refreshRegistriesIndexCacheBestEffort(registries, {
+      verbose: wantsVerboseFromInstallArgs(args),
+    })
+  }
   const registry = await fetchMergedRegistry(registries)
   const installPaths = getInstallPaths(config)
   const conflictState = { mode: parseConflictMode(args) }
@@ -2097,6 +2196,11 @@ async function cmdInstallSkill(...args) {
   }
   const config = readConfigOrDefault()
   const registries = getRegistries(config)
+  if (!wantsSkipRegistryRefresh(args)) {
+    await refreshRegistriesIndexCacheBestEffort(registries, {
+      verbose: wantsVerboseFromInstallArgs(args),
+    })
+  }
   const lock = readLockFile()
   const { registryRef, version: resolvedVersion } = await resolveArtifactWithLock(
     lock,
@@ -2131,6 +2235,11 @@ async function cmdInstallRule(...args) {
   }
   const config = readConfigOrDefault()
   const registries = getRegistries(config)
+  if (!wantsSkipRegistryRefresh(args)) {
+    await refreshRegistriesIndexCacheBestEffort(registries, {
+      verbose: wantsVerboseFromInstallArgs(args),
+    })
+  }
   const lock = readLockFile()
   const { registryRef, version: resolvedVersion } = await resolveArtifactWithLock(
     lock,
@@ -2422,6 +2531,7 @@ async function cmdPush(...args) {
 
   const publishQuiet = !verbose
   const results = []
+  const publishedRegistryRefs = new Set()
 
   for (const packageName of skillTargets) {
     let version = ''
@@ -2462,6 +2572,7 @@ async function cmdPush(...args) {
           pushArtifact('skill', inName, registryPath, version, registryRef, registryBase, registry, publishQuiet)
         }
       }
+      publishedRegistryRefs.add(resolveRegistryRef(registryRef))
       results.push({ kind: 'skill', packageName, version, ok: true })
     } catch (e) {
       const msg = formatPublishError(e)
@@ -2514,6 +2625,7 @@ async function cmdPush(...args) {
           pushArtifact('rule', inName, registryPath, version, registryRef, registryBase, registry, publishQuiet)
         }
       }
+      publishedRegistryRefs.add(resolveRegistryRef(registryRef))
       results.push({ kind: 'rule', packageName, version, ok: true })
     } catch (e) {
       const msg = formatPublishError(e)
@@ -2528,6 +2640,21 @@ async function cmdPush(...args) {
   }
 
   printPublishResultsSummary(results)
+
+  if (publishedRegistryRefs.size) {
+    for (const ref of publishedRegistryRefs) {
+      try {
+        await refreshRegistryJsonCache(ref)
+      } catch (e) {
+        if (verbose) {
+          console.log(
+            `[publish] registry cache refresh failed (${ref}): ${e instanceof Error ? e.message : e}`,
+          )
+        }
+      }
+    }
+  }
+
   await applyPublishProfileVersionSync(profileVersionSyncQueue, args)
   const failCount = results.filter((r) => !r.ok).length
   if (failCount) {
@@ -3138,6 +3265,29 @@ async function cmdSearch(query = '') {
   }
 }
 
+async function cmdRegistry() {
+  const config = readConfigOrDefault()
+  const entries = getRegistriesAnnotated(config)
+  console.log('Registries (priority: project → global → default when not duplicated)')
+  console.log(`Bundle cache: ${BUNDLE_CACHE_DIR}`)
+  console.log('')
+  for (let i = 0; i < entries.length; i++) {
+    const { ref, tier } = entries[i]
+    const label = searchFormatRegistryLabel(ref)
+    const resolved = resolveRegistryRef(ref)
+    console.log(`${i + 1}. [${tier}] ${label}`)
+    try {
+      await refreshRegistryJsonCache(ref)
+      const cachePath = isUrl(resolved)
+        ? bundleCachePath(resolved, 'registry.json')
+        : join(BUNDLE_CACHE_DIR, 'published', registryCacheId(resolved), 'registry.json')
+      console.log(`   cache: updated → ${cachePath}`)
+    } catch (e) {
+      console.log(`   cache: failed — ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+}
+
 const HELP = `
 aipm - Skills and Rules CLI
 
@@ -3150,17 +3300,19 @@ Usage:
 
 Primary commands:
   init [--registry PATH]   Create aipm_profile.json in project root (interactive)
-  install [--on-conflict=..] [--ide=cursor|codex|trae|windsurf]
+  install [--on-conflict=..] [--ide=cursor|codex|trae|windsurf] [--skip-registry-refresh] [-v]
                           Install declared skills/rules; prune dirs not in declared set
+                          Before resolve: refreshes each registry’s registry.json (HTTP: re-fetch; local: re-read disk into cache); fails open on errors. --skip-registry-refresh uses cache/offline only
                           Upgrades/downgrades: clean tree (filesIntegrity matches, no extra files) upgrades without prompt; dirty tree or downgrade asks once per package (--on-conflict)
                           Ends with install summary (updated / unchanged / not updated). Profile + lock as before
                           Uses .aipm/profile.json for IDE; creates it on first run if missing
   list                    List declared and installed skills/rules
-  update [name] [--on-conflict=..]
-                          Update one artifact or all artifacts
+  update [name] [--on-conflict=..] [--skip-registry-refresh] [-v]
+                          Update one artifact or all artifacts (same registry index refresh as install)
   publish [name] [--registry PATH] [-v] [--publish-update-profile=ask|yes|no]
                           Sync to Registry (default: package sourceRegistry; -v verbose)
-                          After success: sync skills/rules versions in aipm_profile.json (see publish-update-profile)
+                          After success: refresh bundle cache for each registry touched; sync aipm_profile (see publish-update-profile)
+  registry                List registries for this project (priority order) and refresh registry.json in ~/.aipm/cache
   doctor                  Check config, registry, and local installs
 
 Create new packages (interactive):
@@ -3175,8 +3327,8 @@ Additional commands:
   global                  Print ~/.aipmrc path / status / template path; create from template if no global file yet
   set-token [token]       Save registry-token in ~/.aipmrc (npmrc-style); publish uses Bearer, GET may use ?token=
   use [profile-id]        Switch to profile (配置单). Without arg, list available profiles.
-  install-skill <name> [version]   Add skill to config and install from registry
-  install-rule <name> [version]   Add rule to config and install from registry
+  install-skill <name> [version] [--skip-registry-refresh] [-v]   Add skill to config and install from registry
+  install-rule <name> [version] [--skip-registry-refresh] [-v]   Add rule to config and install from registry
   uninstall-skill <name>  Remove skill from config and IDE
   uninstall-rule <name>   Remove rule from config and IDE
   search [keyword]        Search all registries (per-source, all versions; fresh registry.json, no cache)
@@ -3194,7 +3346,7 @@ Config keys:
   publishUpdateProfile    (JSON) or publish-update-profile (.aipmrc): after publish, ask | yes | no to update aipm_profile skills/rules versions
   ide                     Set via .aipm/profile.json; override once with --ide= on install/update/etc.
 
-Bundle cache (~/.aipm/cache): Remote reads are cached; publish backs up to cache.
+Bundle cache (~/.aipm/cache): Artifact files use cache on hit; registry.json is refreshed at start of install/update (unless install --skip-registry-refresh); publish / aipm registry also refresh it.
 
 Conflict options (install/update; applies when local tree is “dirty” vs filesIntegrity or not-from-aipm):
   --on-conflict=ask       Ask once per package whether to replace the whole directory (default; TTY only)
@@ -3221,6 +3373,7 @@ const COMMANDS = {
   'set-token': cmdSetToken,
   global: cmdGlobal,
   search: cmdSearch,
+  registry: cmdRegistry,
 }
 
 export async function main(argv = process.argv) {
