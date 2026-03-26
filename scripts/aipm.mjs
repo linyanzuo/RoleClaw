@@ -151,6 +151,85 @@ function parseConflictMode(args = []) {
   return mode
 }
 
+/** Split install-related CLI into flags vs positionals (package name / version). */
+function parseInstallCliArgs(args = []) {
+  const flagArgs = []
+  const positionals = []
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (a === '--skip-registry-refresh' || a === '-v' || a === '--verbose') {
+      flagArgs.push(a)
+      continue
+    }
+    if (typeof a === 'string' && a.startsWith('--on-conflict=')) {
+      flagArgs.push(a)
+      continue
+    }
+    if (a === '--on-conflict') {
+      flagArgs.push(a)
+      if (i + 1 < args.length && args[i + 1] != null && !String(args[i + 1]).startsWith('-')) {
+        flagArgs.push(args[++i])
+      }
+      continue
+    }
+    if (typeof a === 'string' && a.startsWith('--ide=')) {
+      flagArgs.push(a)
+      continue
+    }
+    if (a === '--ide') {
+      flagArgs.push(a)
+      if (i + 1 < args.length) flagArgs.push(args[++i])
+      continue
+    }
+    if (typeof a === 'string' && a.startsWith('--kind=')) {
+      flagArgs.push(a)
+      continue
+    }
+    if (a === '--kind') {
+      flagArgs.push(a)
+      if (i + 1 < args.length) flagArgs.push(args[++i])
+      continue
+    }
+    if (String(a).startsWith('-')) {
+      flagArgs.push(a)
+      continue
+    }
+    positionals.push(a)
+  }
+  return { flagArgs, positionals }
+}
+
+function parseInstallKindFlag(flagArgs = []) {
+  const eq = flagArgs.find((a) => typeof a === 'string' && a.startsWith('--kind='))
+  if (eq) {
+    const v = eq.slice('--kind='.length).trim().toLowerCase()
+    if (v === 'skill' || v === 'rule') return v
+    throw new Error(`Invalid --kind (use skill or rule): ${eq}`)
+  }
+  const idx = flagArgs.indexOf('--kind')
+  if (idx >= 0 && flagArgs[idx + 1] != null) {
+    const v = String(flagArgs[idx + 1]).trim().toLowerCase()
+    if (v === 'skill' || v === 'rule') return v
+    throw new Error(`Invalid --kind (use skill or rule): ${flagArgs[idx + 1]}`)
+  }
+  return null
+}
+
+/** Remove --kind so install-skill / install-rule do not receive it. */
+function stripInstallKindFlags(flagArgs = []) {
+  const out = []
+  for (let i = 0; i < flagArgs.length; i++) {
+    const a = flagArgs[i]
+    if (typeof a === 'string' && a.startsWith('--kind=')) continue
+    if (a === '--kind') {
+      i++
+      continue
+    }
+    out.push(a)
+  }
+  return out
+}
+
 async function promptConflictAction(message, conflictState) {
   if (conflictState.mode === 'skip') return 'skip'
   if (conflictState.mode === 'overwrite') return 'overwrite'
@@ -317,9 +396,10 @@ const USER_AIPMRC_FILE = join(homedir(), '.aipmrc')
 const BUNDLE_CACHE_DIR = join(USER_CONFIG_DIR, 'cache')
 /** 与 aipm.mjs 同目录；npmrc 风格模板，供 `aipm global` 首次创建 ~/.aipmrc */
 const GLOBAL_AIPMRC_TEMPLATE_FILE = join(dirname(SCRIPT_FILE), 'aipm-global-config.template.aipmrc')
+/** 项目 aipm_profile 默认模板；`aipm init` 先深拷贝此文件内容再按 CLI/交互写入 registry、ide、profile 等 */
+const PROFILE_TEMPLATE_FILE = join(dirname(SCRIPT_FILE), 'aipm-profile.template.json')
 const PROFILE_CONFIG_FILE = join(ROOT, 'aipm_profile.json')
 const PROFILE_LOCK_FILE = join(ROOT, 'aipm_profile.lock.json')
-const PACKAGE_JSON = join(ROOT, 'package.json')
 
 const IDE_DIR_MAP = {
   cursor: '.cursor',
@@ -557,12 +637,27 @@ function getRegistryToken() {
 
 function defaultConfig() {
   return {
-    registry: null,
-    registries: null,
-    publishUpdateProfile: undefined,
     skills: {},
     rules: {},
   }
+}
+
+/**
+ * `aipm init` 的起点：读取同目录下 aipm-profile.template.json（深拷贝）。
+ * 模板缺失或非法时回退 defaultConfig()。
+ */
+function loadProfileTemplateForInit() {
+  try {
+    const raw = readFileSync(PROFILE_TEMPLATE_FILE, 'utf8')
+    const parsed = JSON.parse(raw)
+    if (parsed != null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return { config: JSON.parse(JSON.stringify(parsed)), fromFile: true }
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.warn(`aipm: profile template unreadable (${PROFILE_TEMPLATE_FILE}): ${msg}`)
+  }
+  return { config: defaultConfig(), fromFile: false }
 }
 
 /**
@@ -719,10 +814,23 @@ function ensureIdeDirs(paths) {
   mkdirSync(ruleInstallDir, { recursive: true })
 }
 
+/** 写入磁盘时去掉 null / undefined，避免无意义的 "registry": null。 */
+function sanitizeProfileObjectForDisk(rest) {
+  const out = {}
+  for (const [k, v] of Object.entries(rest)) {
+    if (v !== null && v !== undefined) out[k] = v
+  }
+  return out
+}
+
 /** 写入可同步的 aipm_profile.json（不含 ide）；ide 写入 .aipm/profile.json */
 function writeConfig(data) {
   const { ide, ...rest } = data
-  writeFileSync(PROFILE_CONFIG_FILE, JSON.stringify(rest, null, 2) + '\n', 'utf-8')
+  writeFileSync(
+    PROFILE_CONFIG_FILE,
+    JSON.stringify(sanitizeProfileObjectForDisk(rest), null, 2) + '\n',
+    'utf-8',
+  )
   if (ide !== undefined && ide !== null && String(ide).trim() !== '') {
     const k = normalizeIdeKey(String(ide).trim())
     if (k) writeLocalIdeProfile({ ide: k })
@@ -823,11 +931,11 @@ async function resolveArtifactWithLock(lock, registries, packageName, kind, requ
   return fromProfile
 }
 
-/** Read config from package.json aipm or aipm_profile.json (project root). */
+/** Read config from aipm_profile.json (project root). */
 function readConfig() {
   const merged = mergeProjectConfigFromFiles()
   if (!merged) {
-    throw new Error('aipm config not found. Add "aipm" to package.json or run: aipm init')
+    throw new Error('aipm config not found. Run: aipm init')
   }
   return finalizeConfigWithIde(merged)
 }
@@ -966,31 +1074,18 @@ function peekIdeFromSharedFiles() {
       if (n) return n
     } catch {}
   }
-  if (existsSync(PACKAGE_JSON)) {
-    try {
-      const n = normalizeIdeKey(JSON.parse(readFileSync(PACKAGE_JSON, 'utf-8'))?.aipm?.ide)
-      if (n) return n
-    } catch {}
-  }
   return null
 }
 
+/** 仅读取 aipm_profile.json（不再支持根目录 package.json 的 aipm 字段）。 */
 function mergeProjectConfigFromFiles() {
-  if (existsSync(PACKAGE_JSON)) {
-    try {
-      const pkg = JSON.parse(readFileSync(PACKAGE_JSON, 'utf-8'))
-      if (pkg.aipm && typeof pkg.aipm === 'object') {
-        return mergeConfig(defaultConfig(), stripIdeFromObject(pkg.aipm))
-      }
-    } catch {}
+  if (!existsSync(PROFILE_CONFIG_FILE)) return null
+  try {
+    const raw = JSON.parse(readFileSync(PROFILE_CONFIG_FILE, 'utf-8'))
+    return mergeConfig(defaultConfig(), stripIdeFromObject(raw))
+  } catch {
+    return null
   }
-  if (existsSync(PROFILE_CONFIG_FILE)) {
-    try {
-      const raw = JSON.parse(readFileSync(PROFILE_CONFIG_FILE, 'utf-8'))
-      return mergeConfig(defaultConfig(), stripIdeFromObject(raw))
-    } catch {}
-  }
-  return null
 }
 
 /** 合并共享配置与本地 .aipm/profile.json 中的 ide */
@@ -1671,12 +1766,18 @@ function printDeclaredAndInstalledResolved(title, resolved, installDir, markerFi
   }
 }
 
-function parseInitRegistry(args) {
+/** init 仅在命令行显式传入 --registry 时写入 aipm_profile；否则不写 registry 字段。 */
+function parseInitRegistryExplicit(args) {
   const i = args.indexOf('--registry')
-  if (i >= 0 && args[i + 1]) return args[i + 1]
+  if (i >= 0 && args[i + 1] && !String(args[i + 1]).startsWith('-')) {
+    return String(args[i + 1]).trim()
+  }
   const eq = args.find((a) => a.startsWith('--registry='))
-  if (eq) return eq.slice('--registry='.length)
-  return defaultRegistryRef()
+  if (eq) {
+    const v = eq.slice('--registry='.length).trim()
+    if (v) return v
+  }
+  return null
 }
 
 /** 解析 publish 的 --registry 覆盖，未指定则 null。 */
@@ -1688,18 +1789,33 @@ function parseRegistryOverride(args) {
   return null
 }
 
+/** 去掉 --registry 及其参数后的位置参数（unpublish 包名）。 */
+function filterUnpublishPositionalArgs(args) {
+  const out = []
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (a === '--registry') {
+      if (args[i + 1]) i++
+      continue
+    }
+    if (String(a).startsWith('--registry=')) continue
+    if (String(a).startsWith('-')) continue
+    out.push(a)
+  }
+  return out
+}
+
+/** unpublish 目标：--registry 优先，否则与 publish 相同（首个可用源，可为 HTTP 或本地路径）。 */
+function resolveUnpublishRegistryRef(config, cliArgs) {
+  const override = parseRegistryOverride(cliArgs)
+  if (override != null && String(override).trim() !== '') {
+    return resolveRegistryRef(String(override).trim())
+  }
+  return getDefaultPublishRegistry(config)
+}
+
 async function cmdInit(args = []) {
-  const hasPkgAipm =
-    existsSync(PACKAGE_JSON) &&
-    (() => {
-      try {
-        const pkg = JSON.parse(readFileSync(PACKAGE_JSON, 'utf-8'))
-        return pkg.aipm && typeof pkg.aipm === 'object'
-      } catch {
-        return false
-      }
-    })()
-  if (hasPkgAipm || existsSync(PROFILE_CONFIG_FILE)) {
+  if (existsSync(PROFILE_CONFIG_FILE)) {
     console.log('aipm config already exists, skip')
     return
   }
@@ -1710,9 +1826,16 @@ async function cmdInit(args = []) {
     return
   }
 
-  const registryRef = parseInitRegistry(args)
-  const config = defaultConfig()
-  config.registry = registryRef
+  const explicitRegistry = parseInitRegistryExplicit(args)
+  const registryForProfileList = explicitRegistry
+    ? resolveRegistryRef(explicitRegistry)
+    : defaultRegistryRef()
+
+  const { config, fromFile: profileFromTemplateFile } = loadProfileTemplateForInit()
+  if (explicitRegistry) {
+    delete config.registries
+    config.registry = resolveRegistryRef(explicitRegistry)
+  }
 
   const rl = createInterface({ input: process.stdin, output: process.stdout })
 
@@ -1725,7 +1848,7 @@ async function cmdInit(args = []) {
   const ideIndex = parseInt(ideChoice, 10)
   config.ide = ideList[ideIndex - 1] ?? 'cursor'
 
-  const profiles = listAvailableProfiles(registryRef)
+  const profiles = listAvailableProfiles(registryForProfileList)
   if (profiles.length) {
     console.log('\nAvailable profiles (optional, press Enter to skip):')
     profiles.forEach((p, i) => {
@@ -1736,6 +1859,8 @@ async function cmdInit(args = []) {
     const profileIndex = parseInt(profileChoice, 10)
     if (profileIndex >= 1 && profileIndex <= profiles.length) {
       config.profile = profiles[profileIndex - 1]
+    } else {
+      delete config.profile
     }
   }
 
@@ -1746,7 +1871,18 @@ async function cmdInit(args = []) {
 
   writeConfig(config)
   console.log('\ncreated aipm_profile.json')
-  console.log(`registry: ${config.registry}`)
+  if (profileFromTemplateFile) {
+    console.log(`  source template: ${PROFILE_TEMPLATE_FILE}`)
+  } else {
+    console.log('  source: built-in default (template missing or invalid JSON)')
+  }
+  if (config.registry) {
+    console.log(`  project registry: ${config.registry}`)
+  } else {
+    console.log(
+      `  project registry: (not written — use ~/.aipmrc and/or built-in default ${DEFAULT_REGISTRY_URL})`,
+    )
+  }
   console.log(`ide: ${config.ide} (saved to .aipm/profile.json — do not commit; use .gitignore)`)
   if (config.profile) {
     console.log(`profile: ${config.profile}`)
@@ -1754,7 +1890,71 @@ async function cmdInit(args = []) {
   console.log('Run `aipm install` to install skills and rules.')
 }
 
+/**
+ * install <name> 时解析 skill / rule；同名并存时 TTY 询问，非 TTY 须 --kind=skill|rule。
+ */
+async function resolveInstallArtifactKind(registries, packageName, flagArgs = []) {
+  const merged = await fetchMergedRegistry(registries)
+  const hasSkill = Boolean(merged.packages?.[packageName])
+  const hasRule = Boolean(merged.rules?.[packageName])
+  if (!hasSkill && !hasRule) return null
+
+  const fromFlag = parseInstallKindFlag(flagArgs)
+  if (fromFlag === 'skill') {
+    if (!hasSkill) {
+      throw new Error(`No skill '${packageName}' in registry (you passed --kind=skill).`)
+    }
+    return 'skill'
+  }
+  if (fromFlag === 'rule') {
+    if (!hasRule) {
+      throw new Error(`No rule '${packageName}' in registry (you passed --kind=rule).`)
+    }
+    return 'rule'
+  }
+
+  if (hasSkill && !hasRule) return 'skill'
+  if (hasRule && !hasSkill) return 'rule'
+
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      `Both skill and rule '${packageName}' exist in the registry. Pass --kind=skill or --kind=rule.`,
+    )
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  console.log(`\nBoth a skill and a rule named '${packageName}' were found in the registry.`)
+  const ans = (await question(rl, 'Choose [1] skill  [2] rule', '1')).trim().toLowerCase()
+  rl.close()
+  if (ans === '2' || ans === 'rule' || ans === 'r') return 'rule'
+  return 'skill'
+}
+
 async function cmdPull(...args) {
+  const pullPlan = parseInstallPullArgs(args)
+  if (pullPlan.mode === 'one') {
+    await ensureLocalIdeConfigured([...pullPlan.flagArgs])
+    if (!mergeProjectConfigFromFiles()) {
+      throw new Error('aipm config not found. Run: aipm init')
+    }
+    const config = readConfigOrDefault()
+    const registries = getRegistries(config)
+    if (!wantsSkipRegistryRefresh(pullPlan.flagArgs)) {
+      await refreshRegistriesIndexCacheBestEffort(registries, {
+        verbose: wantsVerboseFromInstallArgs(pullPlan.flagArgs),
+      })
+    }
+    const kind = await resolveInstallArtifactKind(registries, pullPlan.name, pullPlan.flagArgs)
+    if (!kind) {
+      throw new Error(
+        `Package '${pullPlan.name}' not found as a skill or rule in any registry. Use aipm search to list names, or check registries in aipm_profile.json.`,
+      )
+    }
+    const forward = [pullPlan.name, pullPlan.version, ...stripInstallKindFlags(pullPlan.flagArgs)]
+    if (kind === 'skill') return cmdInstallSkill(...forward)
+    return cmdInstallRule(...forward)
+  }
+
   await ensureLocalIdeConfigured(args)
   const config = readConfig()
   const { skills, rules } = await resolveDesiredArtifacts(config)
@@ -1958,20 +2158,10 @@ async function cmdUpdate(name, ...args) {
 async function cmdDoctor(...args) {
   let failures = 0
 
-  const hasPkgAipm =
-    existsSync(PACKAGE_JSON) &&
-    (() => {
-      try {
-        const pkg = JSON.parse(readFileSync(PACKAGE_JSON, 'utf-8'))
-        return pkg.aipm && typeof pkg.aipm === 'object'
-      } catch {
-        return false
-      }
-    })()
   const hasAipmConfig = existsSync(PROFILE_CONFIG_FILE)
 
-  if (!hasPkgAipm && !hasAipmConfig) {
-    console.log('[fail] aipm config not found (package.json aipm or aipm_profile.json)')
+  if (!hasAipmConfig) {
+    console.log('[fail] aipm config not found (aipm_profile.json)')
     console.log('run `aipm init` first')
     process.exitCode = 1
     return
@@ -2183,22 +2373,34 @@ async function cmdGlobal() {
   line('file:', USER_AIPMRC_FILE)
   line('status:', status)
   line('template:', GLOBAL_AIPMRC_TEMPLATE_FILE)
+  line('profile tmpl:', PROFILE_TEMPLATE_FILE)
 }
 
 async function cmdInstallSkill(...args) {
-  const [name, version = 'latest'] = args
-  if (!name) {
+  const { flagArgs, positionals } = parseInstallCliArgs(args)
+  if (!positionals[0]) {
     throw new Error('Usage: aipm install-skill <name> [version]  (name: @scope/name or scope_name)')
+  }
+  let name
+  let version = 'latest'
+  if (positionals.length >= 2) {
+    const s0 = parseSearchQuerySpec(positionals[0])
+    name = s0.nameQuery || positionals[0]
+    version = String(positionals[1]).trim() || 'latest'
+  } else {
+    const s = parseSearchQuerySpec(positionals[0])
+    name = s.nameQuery || positionals[0]
+    version = s.versionFilter != null ? String(s.versionFilter).trim() : 'latest'
   }
 
   if (mergeProjectConfigFromFiles()) {
-    await ensureLocalIdeConfigured(args)
+    await ensureLocalIdeConfigured(flagArgs)
   }
   const config = readConfigOrDefault()
   const registries = getRegistries(config)
-  if (!wantsSkipRegistryRefresh(args)) {
+  if (!wantsSkipRegistryRefresh(flagArgs)) {
     await refreshRegistriesIndexCacheBestEffort(registries, {
-      verbose: wantsVerboseFromInstallArgs(args),
+      verbose: wantsVerboseFromInstallArgs(flagArgs),
     })
   }
   const lock = readLockFile()
@@ -2225,19 +2427,30 @@ async function cmdInstallSkill(...args) {
 }
 
 async function cmdInstallRule(...args) {
-  const [name, version = 'latest'] = args
-  if (!name) {
+  const { flagArgs, positionals } = parseInstallCliArgs(args)
+  if (!positionals[0]) {
     throw new Error('Usage: aipm install-rule <name> [version]  (name: @scope/name or scope_name)')
+  }
+  let name
+  let version = 'latest'
+  if (positionals.length >= 2) {
+    const s0 = parseSearchQuerySpec(positionals[0])
+    name = s0.nameQuery || positionals[0]
+    version = String(positionals[1]).trim() || 'latest'
+  } else {
+    const s = parseSearchQuerySpec(positionals[0])
+    name = s.nameQuery || positionals[0]
+    version = s.versionFilter != null ? String(s.versionFilter).trim() : 'latest'
   }
 
   if (mergeProjectConfigFromFiles()) {
-    await ensureLocalIdeConfigured(args)
+    await ensureLocalIdeConfigured(flagArgs)
   }
   const config = readConfigOrDefault()
   const registries = getRegistries(config)
-  if (!wantsSkipRegistryRefresh(args)) {
+  if (!wantsSkipRegistryRefresh(flagArgs)) {
     await refreshRegistriesIndexCacheBestEffort(registries, {
-      verbose: wantsVerboseFromInstallArgs(args),
+      verbose: wantsVerboseFromInstallArgs(flagArgs),
     })
   }
   const lock = readLockFile()
@@ -2352,6 +2565,248 @@ async function cmdUninstallRule(name, ...args) {
   }
 
   console.log('uninstalled rule (if existed)')
+}
+
+function parseDestructiveYes(args = []) {
+  return args.includes('--yes') || args.includes('-y')
+}
+
+/**
+ * Print a plan and require typing "yes", or pass --yes (non-TTY must use --yes).
+ */
+async function confirmDestructivePlan(lines, args = []) {
+  console.log('')
+  for (const line of lines) console.log(line)
+  console.log('')
+  if (parseDestructiveYes(args)) {
+    console.log('(--yes) proceeding without prompt.')
+    return
+  }
+  if (!process.stdin.isTTY) {
+    throw new Error('Not running in a TTY. Re-run with --yes to confirm.')
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  const ans = (await question(rl, 'Type "yes" to proceed', '')).trim().toLowerCase()
+  rl.close()
+  if (ans !== 'yes') {
+    console.log('Aborted (no changes).')
+    process.exit(0)
+  }
+}
+
+/** Enumerate skill/rule dirs under IDE paths that look aipm-installed (package.json + aipm). */
+function collectAipmManagedArtifactDirs(installPaths_skills_rules) {
+  const skillInstallDir = installPaths_skills_rules.skillInstallDir
+  const ruleInstallDir = installPaths_skills_rules.ruleInstallDir
+  const out = { skills: [], rules: [] }
+  for (const installName of listInstalledDirs(skillInstallDir)) {
+    const dir = join(skillInstallDir, installName)
+    const meta = readInstalledVersion(dir)
+    if (meta) {
+      out.skills.push({
+        installName,
+        path: dir,
+        registryPath: meta.registryPath,
+        version: meta.version,
+      })
+    }
+  }
+  for (const installName of listInstalledDirs(ruleInstallDir)) {
+    const dir = join(ruleInstallDir, installName)
+    const meta = readInstalledVersion(dir)
+    if (meta) {
+      out.rules.push({
+        installName,
+        path: dir,
+        registryPath: meta.registryPath,
+        version: meta.version,
+      })
+    }
+  }
+  return out
+}
+
+function applyPatchToProfileConfig(mutator) {
+  if (!existsSync(PROFILE_CONFIG_FILE)) return
+  try {
+    const o = JSON.parse(readFileSync(PROFILE_CONFIG_FILE, 'utf-8'))
+    mutator(o)
+    writeFileSync(PROFILE_CONFIG_FILE, JSON.stringify(o, null, 2) + '\n', 'utf-8')
+  } catch {
+    /* skip corrupt */
+  }
+}
+
+/** Remove all declared skills/rules/profile from aipm_profile.json. */
+function clearAllArtifactDeclarationsInProjectConfig() {
+  applyPatchToProfileConfig((o) => {
+    o.skills = {}
+    o.rules = {}
+    delete o.profile
+  })
+}
+
+/**
+ * 移除 init 产生的项目侧配置，并删除当前 IDE 下所有 aipm 安装的 skill/rule（与 uninstall 相同的识别方式：目录内 package.json 含 aipm）。
+ * 依赖 .aipm/profile.json 中的 ide（或 --ide=）；无配置时可用 --ide= 指定后再 deinit。
+ */
+async function cmdDeinit(...args) {
+  await ensureLocalIdeConfigured(args)
+  const config = readConfigOrDefault()
+  const installPaths = getInstallPaths(config)
+  const managed = collectAipmManagedArtifactDirs(installPaths)
+  const pkgCount = managed.skills.length + managed.rules.length
+
+  const lines = ['aipm deinit — planned changes:', '']
+
+  if (existsSync(PROFILE_CONFIG_FILE)) {
+    lines.push(`  [delete] ${relative(ROOT, PROFILE_CONFIG_FILE)}`)
+  } else {
+    lines.push(`  [skip] ${relative(ROOT, PROFILE_CONFIG_FILE)} (not found)`)
+  }
+
+  if (existsSync(PROFILE_LOCK_FILE)) {
+    lines.push(`  [delete] ${relative(ROOT, PROFILE_LOCK_FILE)}`)
+  } else {
+    lines.push(`  [skip] ${relative(ROOT, PROFILE_LOCK_FILE)} (not found)`)
+  }
+
+  if (existsSync(AIPM_DIR)) {
+    lines.push(`  [delete] directory ${relative(ROOT, AIPM_DIR)}/ (local IDE settings)`)
+  } else {
+    lines.push(`  [skip] ${relative(ROOT, AIPM_DIR)}/ (not found)`)
+  }
+
+  lines.push('')
+  lines.push(`  Current IDE: ${installPaths.ide} (${relative(ROOT, installPaths.ideRootDir)})`)
+  if (pkgCount) {
+    lines.push('  Remove aipm-managed packages from IDE:')
+    for (const s of managed.skills) {
+      const label = s.registryPath ?? s.installName
+      lines.push(`    [delete] skill ${label}@${s.version} → ${relative(ROOT, s.path)}`)
+    }
+    for (const r of managed.rules) {
+      const label = r.registryPath ?? r.installName
+      lines.push(`    [delete] rule ${label}@${r.version} → ${relative(ROOT, r.path)}`)
+    }
+  } else {
+    lines.push('  [skip] No aipm-managed skills/rules under this IDE (nothing to remove in skills/rules dirs)')
+  }
+  lines.push('')
+
+  const willChange =
+    existsSync(PROFILE_CONFIG_FILE) ||
+    existsSync(PROFILE_LOCK_FILE) ||
+    existsSync(AIPM_DIR) ||
+    pkgCount > 0
+
+  if (!willChange) {
+    console.log(
+      'Nothing to deinit (no aipm_profile.json, lock, .aipm, or aipm-managed IDE packages).',
+    )
+    return
+  }
+
+  await confirmDestructivePlan(lines, args)
+
+  for (const s of managed.skills) {
+    if (existsSync(s.path)) rmSync(s.path, { recursive: true, force: true })
+  }
+  for (const r of managed.rules) {
+    if (existsSync(r.path)) rmSync(r.path, { recursive: true, force: true })
+  }
+
+  if (existsSync(PROFILE_LOCK_FILE)) rmSync(PROFILE_LOCK_FILE, { force: true })
+  if (existsSync(PROFILE_CONFIG_FILE)) rmSync(PROFILE_CONFIG_FILE, { force: true })
+  if (existsSync(AIPM_DIR)) rmSync(AIPM_DIR, { recursive: true, force: true })
+
+  console.log('deinit complete.')
+}
+
+/**
+ * 卸载当前 IDE 下所有 aipm 安装的 skill/rule，并清空项目声明与 lock（含 profile 字段，避免下次 install 又从 profile 装回）。
+ */
+async function cmdUninstallAll(...args) {
+  await ensureLocalIdeConfigured(args)
+  const config = readConfigOrDefault()
+  const { skills: mergedSkills, rules: mergedRules } = await resolveDesiredArtifacts(config)
+  const installPaths = getInstallPaths(config)
+  const managed = collectAipmManagedArtifactDirs(installPaths)
+
+  const lines = ['aipm uninstall — planned changes:', '']
+  lines.push(`  IDE: ${installPaths.ide} (${relative(ROOT, installPaths.ideRootDir)})`)
+  lines.push('')
+
+  const declaredSkillNames = new Set(Object.keys(mergedSkills).map((n) => registryPathToInstallName(n)))
+  const declaredRuleNames = new Set(Object.keys(mergedRules).map((n) => registryPathToInstallName(n)))
+
+  if (managed.skills.length) {
+    lines.push('  Skills (directories to delete):')
+    for (const s of managed.skills) {
+      const logical = s.registryPath ?? s.installName
+      const decl = declaredSkillNames.has(s.installName) ? 'declared' : 'extra (aipm-managed only)'
+      lines.push(`    · ${logical} @${s.version}  [${decl}]`)
+      lines.push(`      → ${relative(ROOT, s.path)}`)
+    }
+    lines.push('')
+  }
+  if (managed.rules.length) {
+    lines.push('  Rules (directories to delete):')
+    for (const r of managed.rules) {
+      const logical = r.registryPath ?? r.installName
+      const decl = declaredRuleNames.has(r.installName) ? 'declared' : 'extra (aipm-managed only)'
+      lines.push(`    · ${logical} @${r.version}  [${decl}]`)
+      lines.push(`      → ${relative(ROOT, r.path)}`)
+    }
+    lines.push('')
+  }
+
+  const hasProfileFile = existsSync(PROFILE_CONFIG_FILE)
+
+  const mergedDecl = mergeProjectConfigFromFiles()
+  const hasDeclarations =
+    Boolean(mergedDecl?.profile) ||
+    Object.keys(mergedDecl?.skills ?? {}).length > 0 ||
+    Object.keys(mergedDecl?.rules ?? {}).length > 0
+
+  const lock = readLockFile()
+  const lockHasPins =
+    Object.keys(lock?.skills ?? {}).length > 0 || Object.keys(lock?.rules ?? {}).length > 0
+
+  lines.push('  Configuration & lock:')
+  if (hasProfileFile && hasDeclarations) {
+    lines.push(`    · Clear skills, rules, and profile in ${relative(ROOT, PROFILE_CONFIG_FILE)}`)
+  } else if (hasProfileFile) {
+    lines.push(
+      `    · Patch ${relative(ROOT, PROFILE_CONFIG_FILE)} — ensure skills, rules, profile removed`,
+    )
+  } else {
+    lines.push(`    · (no ${relative(ROOT, PROFILE_CONFIG_FILE)} to patch)`)
+  }
+  lines.push(
+    `    · Write ${relative(ROOT, PROFILE_LOCK_FILE)} with empty skills and rules (overwrite or create)`,
+  )
+
+  const willRemoveDirs = managed.skills.length + managed.rules.length > 0
+
+  if (!willRemoveDirs && !hasDeclarations && !lockHasPins) {
+    console.log('Nothing to uninstall (no aipm-managed packages, no declarations, no lock pins).')
+    return
+  }
+
+  await confirmDestructivePlan(lines, args)
+
+  for (const s of managed.skills) {
+    if (existsSync(s.path)) rmSync(s.path, { recursive: true, force: true })
+  }
+  for (const r of managed.rules) {
+    if (existsSync(r.path)) rmSync(r.path, { recursive: true, force: true })
+  }
+
+  clearAllArtifactDeclarationsInProjectConfig()
+  writeLockFile({ skills: {}, rules: {} })
+
+  console.log('uninstall complete (IDE packages removed; declarations and lock cleared).')
 }
 
 function formatPublishError(e) {
@@ -2827,6 +3282,32 @@ async function publishToRemoteRegistry(kind, packageName, registryUrl, options =
   }
 }
 
+/** HTTP registry：POST /api/unpublish（与 Docker aipm-registry 配套）。 */
+async function unpublishToRemoteRegistry(kind, registryPath, registryUrl) {
+  const base = String(registryUrl).replace(/\/+$/, '')
+  const apiUrl = `${base}/api/unpublish`
+  const token = getRegistryToken()
+  const res = await fetch(apiUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ kind, registryPath }),
+  })
+  const raw = await res.text()
+  let data = {}
+  try {
+    data = JSON.parse(raw)
+  } catch {
+    /* non-JSON body */
+  }
+  if (!res.ok) {
+    const hint = typeof data.error === 'string' ? data.error : raw.slice(0, 200)
+    throw new Error(hint || `Unpublish failed (${res.status})`)
+  }
+}
+
 /** Add artifact (skill or rule) from IDE to Registry。版本以包内 package.json 为准。 */
 async function addArtifactToRegistry(kind, name, args, quiet = false, profileVersionSyncQueue = null) {
   const kindConfig = ARTIFACT_KIND[kind]
@@ -3063,17 +3544,22 @@ async function cmdInitRule(...args) {
   console.log(`\nRule created. Edit ${relative(ROOT, join(srcDir, 'RULE.md'))} then run \`aipm publish ${registryPath}\` to publish.`)
 }
 
-/** Remove artifact from Registry. Name can be registry path (e.g. shared/git-workflow) or logical name. */
-async function removeArtifactFromRegistry(kind, name) {
+/**
+ * Remove artifact from Registry. Name can be registry path (e.g. @scope/pkg) or logical / short name.
+ * 本地仓库：改 registry.json + 删 assets 目录；HTTP 仓库：POST /api/unpublish（需 registry 服务支持）。
+ */
+async function removeArtifactFromRegistry(kind, name, cliArgs = []) {
   const kindConfig = ARTIFACT_KIND[kind]
   const config = readConfig()
-  const registryRef = getDefaultPublishRegistry(config)
+  const registryRef = resolveUnpublishRegistryRef(config, cliArgs)
   if (!registryRef) {
-    throw new Error(`unpublish-${kind} requires a local registry. Add one to registries or use --registry <path>.`)
+    throw new Error(
+      `unpublish-${kind} requires a registry. Add one to aipm_profile / ~/.aipmrc or use --registry <path-or-url>.`,
+    )
   }
 
-  const registryBase = resolveLocalBase(registryRef)
-  const registry = JSON.parse(readFileSync(join(registryBase, 'registry.json'), 'utf-8'))
+  const baseRef = resolveRegistryRef(registryRef)
+  const registry = await readJsonResource(baseRef, 'registry.json')
   const registryKey = kindConfig.registryKey
   const index = registry[registryKey] ?? {}
 
@@ -3093,12 +3579,22 @@ async function removeArtifactFromRegistry(kind, name) {
     throw new Error(`${kind} '${name}' not found in registry`)
   }
 
-  const artifactDir = join(registryBase, kindConfig.registryDir, registryPath)
-  rmSync(artifactDir, { recursive: true, force: true })
-  delete registry[registryKey][registryPath]
-  const registryStr = JSON.stringify(registry, null, 2) + '\n'
-  writeFileSync(join(registryBase, 'registry.json'), registryStr, 'utf-8')
-  writeToBundleCache(registryRef, 'registry.json', registryStr, false)
+  if (isUrl(baseRef)) {
+    await unpublishToRemoteRegistry(kind, registryPath, baseRef)
+    try {
+      await refreshRegistryJsonCache(baseRef)
+    } catch {
+      /* best-effort cache refresh */
+    }
+  } else {
+    const registryBase = resolveLocalBase(registryRef)
+    const artifactDir = join(registryBase, kindConfig.registryDir, registryPath)
+    rmSync(artifactDir, { recursive: true, force: true })
+    delete registry[registryKey][registryPath]
+    const registryStr = JSON.stringify(registry, null, 2) + '\n'
+    writeFileSync(join(registryBase, 'registry.json'), registryStr, 'utf-8')
+    writeToBundleCache(registryRef, 'registry.json', registryStr, false)
+  }
 
   const configKey = kind === 'skill' ? 'skills' : 'rules'
   if (config[configKey]?.[registryPath]) {
@@ -3106,28 +3602,122 @@ async function removeArtifactFromRegistry(kind, name) {
     writeConfig(config)
   }
 
-  console.log(`Unpublished ${kind} ${registryPath} from registry`)
+  const registryWhere = isUrl(baseRef) ? baseRef : resolveLocalBase(registryRef)
+  console.log(`Unpublished ${kind} ${registryPath} from registry at ${registryWhere}`)
 }
 
-async function cmdUnpublishSkill(name) {
-  if (!name) throw new Error('Usage: aipm unpublish-skill <name>')
-  await removeArtifactFromRegistry('skill', name)
+async function cmdUnpublishSkill(...args) {
+  const positional = filterUnpublishPositionalArgs(args)
+  const name = positional[0]
+  if (!name) {
+    throw new Error('Usage: aipm unpublish-skill [--registry PATH|URL] <name>')
+  }
+  await removeArtifactFromRegistry('skill', name, args)
 }
 
-async function cmdUnpublishRule(name) {
-  if (!name) throw new Error('Usage: aipm unpublish-rule <name>')
-  await removeArtifactFromRegistry('rule', name)
+async function cmdUnpublishRule(...args) {
+  const positional = filterUnpublishPositionalArgs(args)
+  const name = positional[0]
+  if (!name) {
+    throw new Error('Usage: aipm unpublish-rule [--registry PATH|URL] <name>')
+  }
+  await removeArtifactFromRegistry('rule', name, args)
 }
 
 
-function matchesSearchQuery(name, item, query) {
-  const q = String(query ?? '').trim()
+/**
+ * 解析 search 查询：支持 @scope/name@1.0.2、scope_name@1.0.2、可选 v 前缀、^x.y.z、latest。
+ * 返回用于名称/描述匹配的 nameQuery 与可选的版本过滤 versionFilter（原始字符串）。
+ */
+function parseSearchQuerySpec(raw) {
+  const displayQuery = String(raw ?? '').trim()
+  if (!displayQuery) {
+    return { displayQuery: '', nameQuery: '', versionFilter: null }
+  }
+  const q = displayQuery
+
+  function isVersionLike(s) {
+    const t = String(s).trim()
+    if (!t) return false
+    if (t === 'latest') return true
+    const u = t.replace(/^v/i, '')
+    if (/^[\^]?\d+\.\d+/.test(u)) return true
+    return false
+  }
+
+  if (q.startsWith('@')) {
+    const lastAt = q.lastIndexOf('@')
+    if (lastAt > 0) {
+      const pkg = q.slice(0, lastAt)
+      const ver = q.slice(lastAt + 1).trim()
+      if (ver && isVersionLike(ver) && pkg.includes('/')) {
+        return { displayQuery, nameQuery: pkg, versionFilter: ver }
+      }
+    }
+    return { displayQuery, nameQuery: q, versionFilter: null }
+  }
+
+  const at = q.indexOf('@')
+  if (at > 0) {
+    const pkg = q.slice(0, at)
+    const ver = q.slice(at + 1).trim()
+    if (ver && isVersionLike(ver)) {
+      return { displayQuery, nameQuery: pkg, versionFilter: ver }
+    }
+  }
+
+  return { displayQuery, nameQuery: q, versionFilter: null }
+}
+
+function itemMatchesSearchVersionFilter(item, versionFilter) {
+  if (versionFilter == null || String(versionFilter).trim() === '') return true
+  const vRaw = String(versionFilter).trim()
+  if (vRaw === 'latest') {
+    return item.latest != null && String(item.latest).trim() !== ''
+  }
+  const vNorm = vRaw.replace(/^v/i, '')
+  const vers = item.versions ?? []
+  if (vRaw.startsWith('^')) {
+    return maxVersionSatisfyingCaret(vers, vRaw) != null
+  }
+  return vers.includes(vNorm) || vers.includes(vRaw) || String(item.latest) === vNorm || String(item.latest) === vRaw
+}
+
+function matchesSearchQuery(name, item, nameQuery, versionFilter) {
+  if (!itemMatchesSearchVersionFilter(item, versionFilter)) return false
+  const q = String(nameQuery ?? '').trim()
   if (!q) return true
   return (
     name.includes(q) ||
     Boolean(item.description?.includes(q)) ||
     Boolean(item.tags?.some((tag) => String(tag).includes(q)))
   )
+}
+
+/**
+ * aipm install：无位置参数 = 按 profile 全量安装；有参数 = 安装单个包（自动识别 skill / rule，行为同 install-skill | install-rule）。
+ */
+function parseInstallPullArgs(args = []) {
+  const { flagArgs, positionals } = parseInstallCliArgs(args)
+  if (positionals.length === 0) return { mode: 'all', flagArgs }
+  if (positionals.length > 2) {
+    throw new Error('Usage: aipm install [flags] [@scope/name | scope_name] [version]')
+  }
+  let name
+  let version = 'latest'
+  if (positionals.length >= 2) {
+    const s0 = parseSearchQuerySpec(positionals[0])
+    name = (s0.nameQuery || positionals[0]).trim()
+    version = String(positionals[1]).trim() || 'latest'
+  } else {
+    const s = parseSearchQuerySpec(positionals[0])
+    name = (s.nameQuery || positionals[0]).trim()
+    version = s.versionFilter != null ? String(s.versionFilter).trim() : 'latest'
+  }
+  if (!name) {
+    throw new Error('Usage: aipm install [flags] [@scope/name | scope_name] [version]')
+  }
+  return { mode: 'one', name, version, flagArgs }
 }
 
 /** Human-readable label for a registry ref (URL normalized, local path prefer relative to ROOT). */
@@ -3141,7 +3731,18 @@ function searchFormatRegistryLabel(ref) {
   return rel && rel !== abs ? rel : abs
 }
 
-function searchFormatVersionLine(item) {
+function searchFormatVersionLine(item, versionFilter = null) {
+  const vf = versionFilter != null && String(versionFilter).trim() !== '' ? String(versionFilter).trim() : null
+  if (vf && vf.startsWith('^')) {
+    const best = maxVersionSatisfyingCaret(item.versions ?? [], vf)
+    if (best) return `matches ${best} (range ${vf})`
+  } else if (vf && vf !== 'latest') {
+    const vNorm = vf.replace(/^v/i, '')
+    const vers = item.versions ?? []
+    if (vers.includes(vNorm) || vers.includes(vf) || String(item.latest) === vNorm) {
+      return `version ${vNorm}`
+    }
+  }
   const versions =
     Array.isArray(item.versions) && item.versions.length ? item.versions.join(' · ') : null
   const latest =
@@ -3170,10 +3771,14 @@ function searchPrintDescription(desc) {
   if (line) console.log(prefix + line)
 }
 
-async function cmdSearch(query = '') {
+async function cmdSearch(...args) {
   const config = readConfigOrDefault()
   const registries = getRegistries(config)
-  const q = String(query ?? '').trim()
+  const rawQuery = args
+    .filter((a) => typeof a === 'string' && !a.startsWith('-'))
+    .join(' ')
+    .trim()
+  const { displayQuery: q, nameQuery, versionFilter } = parseSearchQuerySpec(rawQuery)
 
   const hits = []
   const fetchErrors = []
@@ -3184,10 +3789,10 @@ async function cmdSearch(query = '') {
     try {
       const reg = await fetchRegistry(resolved, { bypassCache: true })
       const skills = Object.entries(reg?.packages ?? {})
-        .filter(([name, item]) => matchesSearchQuery(name, item, q))
+        .filter(([name, item]) => matchesSearchQuery(name, item, nameQuery, versionFilter))
         .sort(([a], [b]) => a.localeCompare(b))
       const rules = Object.entries(reg?.rules ?? {})
-        .filter(([name, item]) => matchesSearchQuery(name, item, q))
+        .filter(([name, item]) => matchesSearchQuery(name, item, nameQuery, versionFilter))
         .sort(([a], [b]) => a.localeCompare(b))
       if (skills.length || rules.length) {
         hits.push({ label, skills, rules })
@@ -3230,7 +3835,7 @@ async function cmdSearch(query = '') {
       console.log(`    ${'─'.repeat(32)}`)
       for (const [name, item] of skills) {
         console.log(`    ${name}`)
-        console.log(`        ${searchFormatVersionLine(item)}`)
+        console.log(`        ${searchFormatVersionLine(item, versionFilter)}`)
         searchPrintDescription(item.description)
       }
       console.log('')
@@ -3241,7 +3846,7 @@ async function cmdSearch(query = '') {
       console.log(`    ${'─'.repeat(32)}`)
       for (const [name, item] of rules) {
         console.log(`    ${name}`)
-        console.log(`        ${searchFormatVersionLine(item)}`)
+        console.log(`        ${searchFormatVersionLine(item, versionFilter)}`)
         searchPrintDescription(item.description)
       }
       console.log('')
@@ -3299,12 +3904,12 @@ Usage:
   aipm <command> [args]
 
 Primary commands:
-  init [--registry PATH]   Create aipm_profile.json in project root (interactive)
-  install [--on-conflict=..] [--ide=cursor|codex|trae|windsurf] [--skip-registry-refresh] [-v]
-                          Install declared skills/rules; prune dirs not in declared set
-                          Before resolve: refreshes each registry’s registry.json (HTTP: re-fetch; local: re-read disk into cache); fails open on errors. --skip-registry-refresh uses cache/offline only
-                          Upgrades/downgrades: clean tree (filesIntegrity matches, no extra files) upgrades without prompt; dirty tree or downgrade asks once per package (--on-conflict)
-                          Ends with install summary (updated / unchanged / not updated). Profile + lock as before
+  init [--registry PATH]   Create aipm_profile.json from aipm-profile.template.json (deep copy), then apply --registry / IDE & profile prompts. Omit --registry to not add project registry (unless template defines it). Fallback if template missing: built-in { skills, rules }.
+  install [flags] [[@scope/name | scope_name] [version]]
+                          No package args: install everything declared in profile + aipm_profile; prune IDE dirs not in declared set; install summary at end
+                          With package args: install one skill or rule (auto-detected; if both exist with same name, prompts or use --kind=skill|--kind=rule)
+                          Optional version: second arg or embedded @scope/name@1.0.2 (see search). Flags: --skip-registry-refresh, -v, --ide=…, --kind=…
+                          Before resolve: refreshes registry index (unless --skip-registry-refresh); --on-conflict for full install only
                           Uses .aipm/profile.json for IDE; creates it on first run if missing
   list                    List declared and installed skills/rules
   update [name] [--on-conflict=..] [--skip-registry-refresh] [-v]
@@ -3314,14 +3919,16 @@ Primary commands:
                           After success: refresh bundle cache for each registry touched; sync aipm_profile (see publish-update-profile)
   registry                List registries for this project (priority order) and refresh registry.json in ~/.aipm/cache
   doctor                  Check config, registry, and local installs
+  deinit [--yes] [--ide=…]  Remove aipm_profile.json, lock, .aipm/, and all aipm-managed skills/rules under current IDE (confirm or --yes)
+  uninstall [--yes]       Remove all aipm-managed skill & rule dirs for current IDE; clear skills/rules/profile in config; empty lock (lists paths; confirm or --yes)
 
 Create new packages (interactive):
   init-skill              Create new skill (prompts: name, description, version)
   init-rule               Create new rule (prompts: name, description, version)
 
 Registry commands (local registry only):
-  unpublish-skill <name> Remove skill from registry
-  unpublish-rule <name>  Remove rule from registry
+  unpublish-skill [--registry PATH|URL] <name>  Remove skill (local data dir or HTTP + POST /api/unpublish)
+  unpublish-rule [--registry PATH|URL] <name>   Remove rule (same)
 
 Additional commands:
   global                  Print ~/.aipmrc path / status / template path; create from template if no global file yet
@@ -3329,17 +3936,16 @@ Additional commands:
   use [profile-id]        Switch to profile (配置单). Without arg, list available profiles.
   install-skill <name> [version] [--skip-registry-refresh] [-v]   Add skill to config and install from registry
   install-rule <name> [version] [--skip-registry-refresh] [-v]   Add rule to config and install from registry
-  uninstall-skill <name>  Remove skill from config and IDE
-  uninstall-rule <name>   Remove rule from config and IDE
-  search [keyword]        Search all registries (per-source, all versions; fresh registry.json, no cache)
+  uninstall-skill <name>  Remove one skill from config and IDE
+  uninstall-rule <name>   Remove one rule from config and IDE
+  search [query]          Search registries (fresh registry.json). Query may include version: @scope/name@1.0.2, name@1.0.2, or ^x.y.z / latest
   help, --help, -h        Show this help
 
 Config keys:
-  aipm_profile.json       Synced project config: registry, registries, profile, skills, rules, publish-update-profile (no ide)
+  aipm_profile.json       Project config only: registry, registries, profile, skills, rules, publish-update-profile (no ide)
   .aipm/profile.json      Local only: ide (and future per-machine keys). Created on first install if missing.
+  skill/rule package.json Per-artifact manifest (name, version, files, aipm.sourceRegistry for publish) — not project config
   ~/.aipmrc                Global (npmrc-style): registry, registries, registry-token, publish-update-profile=ask|yes|no; # comments
-  package.json aipm.*     Optional; ide in package.json is treated like legacy and not written back to profile
-  package.json aipm.sourceRegistry         Package source for publish ("default" or path)
   Default registry is http://localhost:9005/ (aipm-registry); project + global + default are merged in order.
   profile                 Current profile (loads skills/rules from profiles/<profile>.json)
   skills, rules           Dependencies (npm-style: name -> version). Override profile.
@@ -3374,6 +3980,8 @@ const COMMANDS = {
   global: cmdGlobal,
   search: cmdSearch,
   registry: cmdRegistry,
+  deinit: cmdDeinit,
+  uninstall: cmdUninstallAll,
 }
 
 export async function main(argv = process.argv) {
