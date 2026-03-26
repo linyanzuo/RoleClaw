@@ -196,6 +196,115 @@ function readInstalledVersion(artifactDir) {
   }
 }
 
+function sha256Utf8(text) {
+  return createHash('sha256').update(text, 'utf8').digest('hex')
+}
+
+/** filesIntegrity 只记录除 package.json 外的包内文件，便于写入后回写清单而不产生自引用哈希。 */
+function buildFilesIntegrityMap(files, getUtf8Content) {
+  const integrity = {}
+  for (const file of files) {
+    if (file === 'package.json') continue
+    const raw = getUtf8Content(file)
+    if (raw == null) continue
+    integrity[file] = sha256Utf8(raw)
+  }
+  return integrity
+}
+
+/** 本地目录是否与上次安装快照一致：无额外交付文件、声明的文件哈希与 package.json.filesIntegrity 一致。 */
+function isArtifactTreePristine(artifactDir, files) {
+  const pkgPath = join(artifactDir, 'package.json')
+  if (!existsSync(pkgPath)) return false
+  let pkg
+  try {
+    pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+  } catch {
+    return false
+  }
+  const integ = pkg?.filesIntegrity
+  if (!integ || typeof integ !== 'object') return false
+  const contentFiles = files.filter((f) => f !== 'package.json')
+  for (const f of contentFiles) {
+    const expected = integ[f]
+    if (typeof expected !== 'string' || !expected) return false
+    const abs = join(artifactDir, f)
+    if (!existsSync(abs)) return false
+    if (sha256Utf8(readFileSync(abs, 'utf-8')) !== expected) return false
+  }
+  const allowed = new Set(files)
+  const onDisk = listFilesRecursive(artifactDir).filter(
+    (rel) => rel !== '.aipm' && !rel.startsWith('.aipm/'),
+  )
+  for (const rel of onDisk) {
+    if (!allowed.has(rel)) return false
+  }
+  return true
+}
+
+function embedFilesIntegrityInInstalledArtifact(artifactDir, files) {
+  const pkgPath = join(artifactDir, 'package.json')
+  if (!existsSync(pkgPath)) return
+  const integrity = buildFilesIntegrityMap(files, (f) => {
+    const abs = join(artifactDir, f)
+    return existsSync(abs) ? readFileSync(abs, 'utf-8') : null
+  })
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+  pkg.filesIntegrity = integrity
+  pkg.files = files
+  writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`, 'utf-8')
+}
+
+function recordLockEntry(newLock, kindKey, packageName, version, registryRef, result, prevLock) {
+  const prev = prevLock?.[kindKey]?.[packageName]
+  if (
+    result.outcome === 'declined_overwrite' ||
+    result.outcome === 'declined_downgrade' ||
+    result.outcome === 'skipped_non_dir'
+  ) {
+    if (prev) newLock[kindKey][packageName] = prev
+    return
+  }
+  newLock[kindKey][packageName] = { version, registry: registryRef }
+}
+
+function pushInstallSummaryLine(summary, kind, installName, version, result) {
+  const label = `${kind} ${installName}@${version}`
+  if (result.outcome === 'updated') summary.updated.push(label)
+  else if (result.outcome === 'unchanged') summary.unchanged.push(label)
+  else {
+    const reason =
+      result.outcome === 'declined_downgrade'
+        ? 'user declined downgrade'
+        : result.outcome === 'declined_overwrite'
+          ? 'user declined overwrite'
+          : result.outcome === 'skipped_non_dir'
+            ? 'path exists but is not a directory (skipped)'
+            : result.outcome ?? 'skipped'
+    summary.notUpdated.push(`${label} — ${reason}`)
+  }
+}
+
+function printInstallSummary(summary) {
+  console.log('')
+  console.log('--- install summary ---')
+  if (summary.updated.length) {
+    console.log('Updated:')
+    for (const line of summary.updated) console.log(`  · ${line}`)
+  }
+  if (summary.unchanged.length) {
+    console.log('Unchanged (already at target version):')
+    for (const line of summary.unchanged) console.log(`  · ${line}`)
+  }
+  if (summary.notUpdated.length) {
+    console.log('Not updated:')
+    for (const line of summary.notUpdated) console.log(`  · ${line}`)
+  }
+  if (!summary.updated.length && !summary.unchanged.length && !summary.notUpdated.length) {
+    console.log('(no packages declared)')
+  }
+}
+
 const ROOT = process.cwd()
 const SCRIPT_FILE = fileURLToPath(import.meta.url)
 const TOOL_ROOT = resolve(dirname(SCRIPT_FILE), '..')
@@ -1160,6 +1269,27 @@ async function installArtifact(baseRef, kind, registryPath, version, options = {
   }
   const artifactDir = join(installRoot, installName)
 
+  async function writeArtifactFilesFromRegistry() {
+    mkdirSync(artifactDir, { recursive: true })
+    for (const file of files) {
+      let content = await readTextResource(
+        baseRef,
+        `${kindConfig.registryDir}/${registryPath}/${version}/${file}`,
+      )
+      const targetPath = join(artifactDir, file)
+      mkdirSync(dirname(targetPath), { recursive: true })
+      if (file === 'SKILL.md' && kind === 'skill' && installName !== registryPath) {
+        content = patchSkillNameInFrontmatter(content, installName)
+      }
+      if (file === 'RULE.md' && kind === 'rule' && installName !== registryPath) {
+        content = patchSkillNameInFrontmatter(content, installName)
+      }
+      writeFileSync(targetPath, content, 'utf-8')
+      process.stdout.write('.')
+    }
+    embedFilesIntegrityInInstalledArtifact(artifactDir, files)
+  }
+
   if (existsSync(artifactDir)) {
     const stat = statSync(artifactDir)
     if (!stat.isDirectory()) {
@@ -1169,61 +1299,78 @@ async function installArtifact(baseRef, kind, registryPath, version, options = {
       )
       if (action === 'skip') {
         console.log(' skipped')
-        return { installed: false, skipped: true }
+        return { installed: false, skipped: true, outcome: 'skipped_non_dir' }
       }
       rmSync(artifactDir, { recursive: true, force: true })
+      await writeArtifactFilesFromRegistry()
+      console.log(' ok')
+      return { installed: true, skipped: false, outcome: 'updated' }
+    }
+
+    const installed = readInstalledVersion(artifactDir)
+    if (installed) {
+      const cmp = semverCompare(installed.version, version)
+      if (cmp === 0) {
+        console.log(' up-to-date')
+        return { installed: false, skipped: true, outcome: 'unchanged' }
+      }
+      if (cmp > 0) {
+        if (conflictState.mode === 'skip') {
+          console.log(' skipped')
+          return { installed: false, skipped: true, outcome: 'declined_downgrade' }
+        }
+        if (conflictState.mode !== 'overwrite') {
+          const msg = `[downgrade] ${installName}: installed ${installed.version} -> target ${version}. Replace entire directory with the older version?`
+          const action = await promptConflictAction(msg, conflictState)
+          if (action === 'skip') {
+            console.log(' skipped')
+            return { installed: false, skipped: true, outcome: 'declined_downgrade' }
+          }
+        }
+      } else {
+        const pristine = isArtifactTreePristine(artifactDir, files)
+        if (!pristine) {
+          if (conflictState.mode === 'skip') {
+            console.log(' skipped')
+            return { installed: false, skipped: true, outcome: 'declined_overwrite' }
+          }
+          if (conflictState.mode !== 'overwrite') {
+            const msg =
+              cmp === -1
+                ? `[modified] ${installName}: local files differ from last install (extra files, edited files, or missing filesIntegrity). Replace entire directory with ${registryPath}@${version}?`
+                : `[conflict] ${installName}: cannot compare versions (installed ${installed.version} vs target ${version}). Replace entire directory with ${registryPath}@${version}?`
+            const action = await promptConflictAction(msg, conflictState)
+            if (action === 'skip') {
+              console.log(' skipped')
+              return { installed: false, skipped: true, outcome: 'declined_overwrite' }
+            }
+          }
+        }
+      }
     } else {
-      const installed = readInstalledVersion(artifactDir)
-      if (installed) {
-        const cmp = semverCompare(installed.version, version)
-        if (cmp === 0) {
-          console.log(' up-to-date')
-          return { installed: false, skipped: true }
-        }
-        if (cmp > 0) {
-          console.log(` skipped (installed ${installed.version} > target ${version})`)
-          return { installed: false, skipped: true }
-        }
-        const msg =
-          cmp === -1
-            ? `[newer] ${installName}: installed ${installed.version} -> ${version}. Overwrite?`
-            : `[conflict] ${installName}: cannot compare versions (installed ${installed.version} vs target ${version}). Overwrite?`
+      if (conflictState.mode === 'skip') {
+        console.log(' skipped')
+        return { installed: false, skipped: true, outcome: 'declined_overwrite' }
+      }
+      if (conflictState.mode !== 'overwrite') {
+        const msg = `[conflict] '${relative(ROOT, artifactDir)}' exists but has no package.json with aipm field (not from aipm). Replace with ${registryPath}@${version}?`
         const action = await promptConflictAction(msg, conflictState)
         if (action === 'skip') {
           console.log(' skipped')
-          return { installed: false, skipped: true }
-        }
-      } else {
-        const action = await promptConflictAction(
-          `[conflict] '${relative(ROOT, artifactDir)}' exists but has no package.json with aipm field (not from aipm). Overwrite?`,
-          conflictState,
-        )
-        if (action === 'skip') {
-          console.log(' skipped')
-          return { installed: false, skipped: true }
+          return { installed: false, skipped: true, outcome: 'declined_overwrite' }
         }
       }
-      rmSync(artifactDir, { recursive: true, force: true })
     }
-  }
-  mkdirSync(artifactDir, { recursive: true })
 
-  for (const file of files) {
-    let content = await readTextResource(baseRef, `${kindConfig.registryDir}/${registryPath}/${version}/${file}`)
-    const targetPath = join(artifactDir, file)
-    mkdirSync(dirname(targetPath), { recursive: true })
-    if (file === 'SKILL.md' && kind === 'skill' && installName !== registryPath) {
-      content = patchSkillNameInFrontmatter(content, installName)
-    }
-    if (file === 'RULE.md' && kind === 'rule' && installName !== registryPath) {
-      content = patchSkillNameInFrontmatter(content, installName)
-    }
-    writeFileSync(targetPath, content, 'utf-8')
-    process.stdout.write('.')
+    rmSync(artifactDir, { recursive: true, force: true })
+    await writeArtifactFilesFromRegistry()
+    console.log(' ok')
+    return { installed: true, skipped: false, outcome: 'updated' }
   }
 
+  await writeArtifactFilesFromRegistry()
   console.log(' ok')
-  return { installed: true, skipped: false }
+  return { installed: true, skipped: false, outcome: 'updated' }
 }
 
 /** Load profile (配置单) from registry. Returns { skills, rules } or null if not found. */
@@ -1287,6 +1434,22 @@ function patchSkillNameInFrontmatter(content, installName) {
   const block = match[1]
   const patched = block.replace(/name:\s*["']?[^"'\n]+["']?/m, `name: "${installName}"`)
   return content.replace(match[0], `---\n${patched}\n---`)
+}
+
+/** Align with publish/install transforms; hashes exclude package.json (added when writing package.json). */
+function collectFilesIntegrityForPublish(files, srcDir, installName, registryPath) {
+  return buildFilesIntegrityMap(files, (file) => {
+    const srcPath = join(srcDir, file)
+    if (!existsSync(srcPath)) return null
+    let data = readFileSync(srcPath, 'utf-8')
+    if (
+      (file === 'SKILL.md' || file === 'RULE.md') &&
+      installName !== registryPath
+    ) {
+      data = patchSkillNameInFrontmatter(data, registryPath)
+    }
+    return data
+  })
 }
 
 /** Parse name and description from SKILL.md or RULE.md frontmatter. */
@@ -1516,6 +1679,7 @@ async function cmdPull(...args) {
   ensureIdeDirs(installPaths)
 
   const newLock = { skills: {}, rules: {} }
+  const summary = { updated: [], unchanged: [], notUpdated: [] }
 
   for (const [packageName, requestedVersion] of Object.entries(skills)) {
     const { registryRef, version } = await resolveArtifactWithLock(
@@ -1534,7 +1698,8 @@ async function cmdPull(...args) {
     if (result.installed && explicitSkills.has(packageName)) {
       config.skills[packageName] = version
     }
-    newLock.skills[packageName] = { version, registry: registryRef }
+    recordLockEntry(newLock, 'skills', packageName, version, registryRef, result, lock)
+    pushInstallSummaryLine(summary, 'skill', installName, version, result)
   }
 
   for (const [packageName, requestedVersion] of Object.entries(rules)) {
@@ -1554,7 +1719,8 @@ async function cmdPull(...args) {
     if (result.installed && explicitRules.has(packageName)) {
       config.rules[packageName] = version
     }
-    newLock.rules[packageName] = { version, registry: registryRef }
+    recordLockEntry(newLock, 'rules', packageName, version, registryRef, result, lock)
+    pushInstallSummaryLine(summary, 'rule', installName, version, result)
   }
 
   writeLockFile(newLock)
@@ -1581,6 +1747,7 @@ async function cmdPull(...args) {
   }
 
   writeConfig(config)
+  printInstallSummary(summary)
   console.log('install complete')
 }
 
@@ -1637,6 +1804,7 @@ async function cmdUpdate(name, ...args) {
 
   const lock = readLockFile()
   const newLock = { skills: {}, rules: {} }
+  const summary = { updated: [], unchanged: [], notUpdated: [] }
 
   for (const packageName of skillTargets) {
     const requested = skills[packageName] ?? 'latest'
@@ -1656,7 +1824,8 @@ async function cmdUpdate(name, ...args) {
     if (result.installed && (config.skills ?? {})[packageName] !== undefined) {
       config.skills[packageName] = version
     }
-    newLock.skills[packageName] = { version, registry: registryRef }
+    recordLockEntry(newLock, 'skills', packageName, version, registryRef, result, lock)
+    pushInstallSummaryLine(summary, 'skill', installName, version, result)
   }
 
   for (const packageName of ruleTargets) {
@@ -1677,11 +1846,13 @@ async function cmdUpdate(name, ...args) {
     if (result.installed && (config.rules ?? {})[packageName] !== undefined) {
       config.rules[packageName] = version
     }
-    newLock.rules[packageName] = { version, registry: registryRef }
+    recordLockEntry(newLock, 'rules', packageName, version, registryRef, result, lock)
+    pushInstallSummaryLine(summary, 'rule', installName, version, result)
   }
 
   writeConfig(config)
   mergeAndWriteLock(lock, newLock, skills, rules)
+  printInstallSummary(summary)
   console.log('update complete')
 }
 
@@ -2172,6 +2343,7 @@ async function cmdPush(...args) {
     ]
     mkdirSync(destDir, { recursive: true })
 
+    const filesIntegrity = collectFilesIntegrityForPublish(files, srcDir, installName, registryPath)
     const relDir = `${kindConfig.registryDir}/${registryPath}/${version}`
     for (const file of files) {
       const srcPath = join(srcDir, file)
@@ -2191,6 +2363,7 @@ async function cmdPush(...args) {
             if (!pkg.aipm) pkg.aipm = {}
             if (pkg.aipm.sourceRegistry === undefined) pkg.aipm.sourceRegistry = 'default'
             pkg.files = files
+            pkg.filesIntegrity = filesIntegrity
             content = JSON.stringify(pkg, null, 2) + '\n'
           } catch {
             /* keep original */
@@ -2443,12 +2616,20 @@ async function publishToRemoteRegistry(kind, packageName, registryUrl, options =
       files[f] = readFileSync(p, 'utf-8')
     }
   }
+  const fileKeysSorted = Object.keys(files).sort()
+  const filesIntegrityRemote = collectFilesIntegrityForPublish(
+    fileKeysSorted,
+    srcDir,
+    installName,
+    registryPath,
+  )
   if (files['package.json']) {
     try {
       const pkg = JSON.parse(files['package.json'])
       if (!pkg.aipm) pkg.aipm = {}
       pkg.aipm.sourceRegistry = pkg.aipm.sourceRegistry ?? 'default'
-      pkg.files = Object.keys(files)
+      pkg.files = fileKeysSorted
+      pkg.filesIntegrity = filesIntegrityRemote
       files['package.json'] = JSON.stringify(pkg, null, 2) + '\n'
     } catch {
       /* keep original */
@@ -2594,6 +2775,7 @@ async function addArtifactToRegistry(kind, name, args, quiet = false, profileVer
   }
 
   mkdirSync(destDir, { recursive: true })
+  const filesIntegrity = collectFilesIntegrityForPublish(files, srcDir, installName, registryPath)
   const relDir = `${kindConfig.registryDir}/${registryPath}/${version}`
   for (const file of files) {
     const srcPath = join(srcDir, file)
@@ -2607,6 +2789,7 @@ async function addArtifactToRegistry(kind, name, args, quiet = false, profileVer
           if (!pkg.aipm) pkg.aipm = {}
           if (pkg.aipm.sourceRegistry === undefined) pkg.aipm.sourceRegistry = 'default'
           pkg.files = files
+          pkg.filesIntegrity = filesIntegrity
           content = JSON.stringify(pkg, null, 2) + '\n'
         } catch {
           /* keep original */
@@ -2969,7 +3152,8 @@ Primary commands:
   init [--registry PATH]   Create aipm_profile.json in project root (interactive)
   install [--on-conflict=..] [--ide=cursor|codex|trae|windsurf]
                           Install declared skills/rules; prune dirs not in declared set
-                          Profile + lock: latest→lock; same registry + semver-satisfied by lock (incl. ^)→lock; else resolve + refresh lock
+                          Upgrades/downgrades: clean tree (filesIntegrity matches, no extra files) upgrades without prompt; dirty tree or downgrade asks once per package (--on-conflict)
+                          Ends with install summary (updated / unchanged / not updated). Profile + lock as before
                           Uses .aipm/profile.json for IDE; creates it on first run if missing
   list                    List declared and installed skills/rules
   update [name] [--on-conflict=..]
@@ -3012,10 +3196,10 @@ Config keys:
 
 Bundle cache (~/.aipm/cache): Remote reads are cached; publish backs up to cache.
 
-Conflict options (install/update):
-  --on-conflict=ask       Ask per conflict (default; interactive shells only)
-  --on-conflict=skip      Skip conflicting files/directories
-  --on-conflict=overwrite Overwrite conflicting files/directories
+Conflict options (install/update; applies when local tree is “dirty” vs filesIntegrity or not-from-aipm):
+  --on-conflict=ask       Ask once per package whether to replace the whole directory (default; TTY only)
+  --on-conflict=skip      Skip packages that would need overwrite (keep previous lock pin when possible)
+  --on-conflict=overwrite Replace whole directory without asking when dirty
 `
 
 const COMMANDS = {
