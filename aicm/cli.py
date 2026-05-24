@@ -9,6 +9,7 @@ aicm — AI Context Manager
 
 用法：
   aicm .                          # 注入高频规范
+  aicm . --inject-high            # 注入高频规范（显式命令）
   aicm . --scan                   # 列出规范文件树
   aicm . --check                  # 检测与 CLAUDE.md 的相似重复（默认阈值 80%）
   aicm . --check --threshold=0.9  # 自定义相似度阈值
@@ -46,6 +47,7 @@ HELP_TEXT = """aicm — AI Context Manager
 
 选项：
   --scan                       列出带 frontmatter 标识的规范文件树
+  --inject-high                提取 inject:high 高频内容块并输出
   --check                      检测规范内容与 CLAUDE.md 的相似重复
   --threshold=<0.0~1.0>        设置 --check 相似度阈值，默认 0.8
   --init                       初始化所有 CLAUDE.md，注入强制执行块
@@ -53,6 +55,7 @@ HELP_TEXT = """aicm — AI Context Manager
 
 示例：
   aicm .
+  aicm . --inject-high
   aicm . --scan
   aicm . --check
   aicm . --check --threshold=0.9
@@ -356,6 +359,7 @@ def main() -> None:
     check_mode = "--check" in args
     scan_mode  = "--scan"  in args
     init_mode  = "--init"  in args
+    inject_high_mode = "--inject-high" in args
 
     threshold = DEFAULT_THRESHOLD
     for arg in args:
@@ -379,6 +383,8 @@ def main() -> None:
         cmd_scan(search_dir)
     elif check_mode:
         cmd_check(search_dir, threshold)
+    elif inject_high_mode:
+        cmd_inject(search_dir)
     else:
         cmd_inject(search_dir)
 
