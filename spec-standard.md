@@ -1,5 +1,6 @@
 ---
 frontmatter: 规范文档写作标准，定义 frontmatter 格式与 inject:high 标记规范，适用于工作区所有规范文件
+update: 2026-05-24
 ---
 
 # 规范文档写作标准
@@ -32,6 +33,7 @@ frontmatter: 规范文档写作标准，定义 frontmatter 格式与 inject:high
 ```
 ---
 frontmatter: 本文档的职责描述
+update: YYYY-MM-DD
 ---
 ```
 
@@ -40,12 +42,14 @@ frontmatter: 本文档的职责描述
 | 字段 | 必填 | 说明 |
 |---|---|---|
 | `frontmatter` | ✅ | 一句话描述本文档的职责和适用范围，供人和扫描器识别 |
+| `update` | 否 | 文档最近更新时间，建议使用 `YYYY-MM-DD` 格式 |
 
 ### 示例
 
 ```markdown
 ---
 frontmatter: Git 分支策略、工作流、Commit 规范，适用于工作区所有项目
+update: 2026-05-24
 ---
 
 # Git 工作流规范
@@ -95,6 +99,7 @@ frontmatter 声明文件参与扫描，内容块标记声明具体哪些内容�
 ```markdown
 ---
 frontmatter: [本文档的职责描述]
+update: YYYY-MM-DD
 ---
 
 # [规范名称]
