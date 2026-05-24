@@ -1,7 +1,3 @@
----
-frontmatter: aicm 使用指南，全局规范匹配工具的命令说明与工作原理
----
-
 # aicm 使用指南
 
 > AI Context Manager：从各规范文件中自动提取高频内容，注入到 AI 上下文。
