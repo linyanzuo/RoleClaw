@@ -199,6 +199,30 @@ function parseInstallCliArgs(args = []) {
   return { flagArgs, positionals }
 }
 
+/** init-skill / init-rule：仅识别 --ide，其余位置参数为包名（第一个可跳过交互询问包名）。 */
+function parseInitArtifactCliArgs(args = []) {
+  const flagArgs = []
+  const positionals = []
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (typeof a === 'string' && a.startsWith('--ide=')) {
+      flagArgs.push(a)
+      continue
+    }
+    if (a === '--ide') {
+      flagArgs.push(a)
+      if (i + 1 < args.length) flagArgs.push(args[++i])
+      continue
+    }
+    if (String(a).startsWith('-')) {
+      flagArgs.push(a)
+      continue
+    }
+    positionals.push(a)
+  }
+  return { flagArgs, positionals }
+}
+
 function parseInstallKindFlag(flagArgs = []) {
   const eq = flagArgs.find((a) => typeof a === 'string' && a.startsWith('--kind='))
   if (eq) {
@@ -417,8 +441,86 @@ const ARTIFACT_KIND = {
   rule: {
     registryKey: 'rules',
     registryDir: 'assets/rules',
+    /** 仅作文档；实际文件名由 resolveRuleMarkerFromPkgFiles / ruleMarkerFilename 决定（兼容旧 RULE.md）。 */
     markerFile: 'RULE.md',
   },
+}
+
+const LEGACY_RULE_MARKER = 'RULE.md'
+
+/** @docker/project-context → project-context（用于规则主 markdown 文件名） */
+function ruleLogicalBasename(registryPath) {
+  const tail = registryPath.includes('/') ? registryPath.split('/').pop() : registryPath
+  const s = String(tail ?? '').trim()
+  return s || 'rule'
+}
+
+/** 与 skill 目录语义一致：短名 + .md，去掉非法路径字符 */
+function ruleMarkerFilename(registryPath) {
+  const base = ruleLogicalBasename(registryPath)
+  const safe = base
+    .replace(/[/\\:*?"<>|]/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+  if (!safe) {
+    throw new Error(`Invalid registry path for rule marker file: ${registryPath}`)
+  }
+  return `${safe}.md`
+}
+
+/**
+ * 从 package.json 的 files 解析规则「主」markdown：优先 LEGACY RULE.md，否则 {逻辑短名}.md，否则唯一的非 README .md。
+ * 若传入 srcDir，则先把「目录型」files 项展开为具体路径再解析（与 publish 时 directory 条目一致）。
+ */
+function resolveRuleMarkerFromPkgFiles(pkg, registryPath, srcDir = null) {
+  const files = Array.isArray(pkg?.files) ? pkg.files : []
+  let md
+  if (srcDir) {
+    const expanded = []
+    for (const raw of files) {
+      if (typeof raw !== 'string' || !raw.trim()) continue
+      const entry = normalizePublishRelPath(raw.trim())
+      const abs = join(srcDir, entry)
+      if (!existsSync(abs)) continue
+      try {
+        const st = statSync(abs)
+        if (st.isDirectory()) {
+          for (const f of listFilesRecursive(abs, abs)) {
+            expanded.push(normalizePublishRelPath(join(entry, f)))
+          }
+        } else if (st.isFile()) {
+          expanded.push(entry)
+        }
+      } catch {
+        /* skip */
+      }
+    }
+    md = expanded.filter(
+      (f) => f.endsWith('.md') && !/^readme\.md$/i.test(basename(f)),
+    )
+  } else {
+    md = files.filter(
+      (f) => typeof f === 'string' && f.endsWith('.md') && !/^readme\.md$/i.test(f),
+    )
+  }
+  if (md.includes(LEGACY_RULE_MARKER)) return LEGACY_RULE_MARKER
+  const expected = ruleMarkerFilename(registryPath)
+  if (md.includes(expected)) return expected
+  if (md.length === 1) return md[0]
+  return md[0] ?? expected
+}
+
+function ruleArtifactDirHasMarker(dir, registryPath) {
+  const pkgPath = join(dir, 'package.json')
+  if (!existsSync(pkgPath)) return false
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+    const marker = resolveRuleMarkerFromPkgFiles(pkg, registryPath, dir)
+    return existsSync(join(dir, marker))
+  } catch {
+    return false
+  }
 }
 
 function isUrl(value) {
@@ -1451,6 +1553,8 @@ async function installArtifact(baseRef, kind, registryPath, version, options = {
   if (!files?.length) {
     throw new Error(`Package ${registryPath}@${version} missing package.json with valid "files" array`)
   }
+  const rulePrimaryMd =
+    kind === 'rule' ? resolveRuleMarkerFromPkgFiles(pkg, registryPath) : null
   const artifactDir = join(installRoot, installName)
 
   async function writeArtifactFilesFromRegistry() {
@@ -1465,7 +1569,7 @@ async function installArtifact(baseRef, kind, registryPath, version, options = {
       if (file === 'SKILL.md' && kind === 'skill' && installName !== registryPath) {
         content = patchSkillNameInFrontmatter(content, installName)
       }
-      if (file === 'RULE.md' && kind === 'rule' && installName !== registryPath) {
+      if (kind === 'rule' && rulePrimaryMd && file === rulePrimaryMd && installName !== registryPath) {
         content = patchSkillNameInFrontmatter(content, installName)
       }
       writeFileSync(targetPath, content, 'utf-8')
@@ -1557,6 +1661,11 @@ async function installArtifact(baseRef, kind, registryPath, version, options = {
   return { installed: true, skipped: false, outcome: 'updated' }
 }
 
+/** 是否把本次解析到的版本写回 aipm_profile（已安装或与磁盘一致，而非用户跳过/拒绝覆盖）。 */
+function shouldPinArtifactVersionInProfile(result) {
+  return Boolean(result?.installed || result?.outcome === 'unchanged')
+}
+
 /** Load profile (配置单) from registry. Returns { skills, rules } or null if not found. */
 async function loadProfileConfigFromRef(registryRef, profileId) {
   const profilePath = `profiles/${profileId}.json`
@@ -1621,15 +1730,17 @@ function patchSkillNameInFrontmatter(content, installName) {
 }
 
 /** Align with publish/install transforms; hashes exclude package.json (added when writing package.json). */
-function collectFilesIntegrityForPublish(files, srcDir, installName, registryPath) {
+function collectFilesIntegrityForPublish(files, srcDir, installName, registryPath, options = {}) {
+  const ruleMarkerFile = options.ruleMarkerFile
   return buildFilesIntegrityMap(files, (file) => {
     const srcPath = join(srcDir, file)
     if (!existsSync(srcPath)) return null
     let data = readFileSync(srcPath, 'utf-8')
-    if (
-      (file === 'SKILL.md' || file === 'RULE.md') &&
-      installName !== registryPath
-    ) {
+    if (file === 'SKILL.md' && installName !== registryPath) {
+      data = patchSkillNameInFrontmatter(data, registryPath)
+    } else if (ruleMarkerFile && file === ruleMarkerFile && installName !== registryPath) {
+      data = patchSkillNameInFrontmatter(data, registryPath)
+    } else if (!ruleMarkerFile && file === LEGACY_RULE_MARKER && installName !== registryPath) {
       data = patchSkillNameInFrontmatter(data, registryPath)
     }
     return data
@@ -1649,20 +1760,7 @@ function parseArtifactFrontmatter(content) {
 
 /** Validate artifact before publish（版本以 package.json 为准，不与 aipm_profile 对齐）。 */
 function validatePublishArtifact(srcDir, kindConfig, registryPath) {
-  const markerFile = kindConfig.markerFile
-  const markerPath = join(srcDir, markerFile)
-  if (!existsSync(markerPath)) {
-    throw new Error(`Missing ${markerFile}`)
-  }
-  const markerContent = readFileSync(markerPath, 'utf-8')
-  const { name: fmName, description: fmDesc } = parseArtifactFrontmatter(markerContent)
-  if (!fmName?.trim()) {
-    throw new Error(`${markerFile} frontmatter must have "name" field`)
-  }
-  if (!fmDesc?.trim()) {
-    throw new Error(`${markerFile} frontmatter must have "description" field`)
-  }
-
+  const isRule = kindConfig.registryKey === 'rules'
   const pkgPath = join(srcDir, 'package.json')
   if (!existsSync(pkgPath)) {
     throw new Error('package.json is required')
@@ -1681,30 +1779,32 @@ function validatePublishArtifact(srcDir, kindConfig, registryPath) {
   if (pkg?.version == null || String(pkg.version).trim() === '') {
     throw new Error('package.json "version" is required')
   }
-  const files = Array.isArray(pkg?.files) ? pkg.files : []
-  if (!files.length) {
+  const filesDeclared = Array.isArray(pkg?.files) ? pkg.files : []
+  if (!filesDeclared.length) {
     throw new Error('package.json "files" array is required and must not be empty')
   }
-  if (!files.includes(markerFile)) {
-    throw new Error(`package.json "files" must include "${markerFile}"`)
+
+  const markerFile = isRule ? resolveRuleMarkerFromPkgFiles(pkg, registryPath, srcDir) : 'SKILL.md'
+  const markerPath = join(srcDir, markerFile)
+  if (!existsSync(markerPath)) {
+    throw new Error(`Missing ${markerFile}`)
   }
-  for (const f of files) {
-    const p = join(srcDir, f)
-    if (!existsSync(p)) {
-      throw new Error(`package.json "files" lists "${f}" but file does not exist`)
-    }
+  const markerContent = readFileSync(markerPath, 'utf-8')
+  const { name: fmName, description: fmDesc } = parseArtifactFrontmatter(markerContent)
+  if (!fmName?.trim()) {
+    throw new Error(`${markerFile} frontmatter must have "name" field`)
   }
-  const allInDir = listFilesRecursive(srcDir, srcDir).filter(
-    (f) => f !== '.aipm' && f !== 'files.json',
-  )
-  const filesSet = new Set(files)
-  for (const f of allInDir) {
-    if (!filesSet.has(f)) {
-      throw new Error(
-        `File "${f}" exists in directory but is not in package.json "files". Add it or remove the file.`,
-      )
-    }
+  if (!fmDesc?.trim()) {
+    throw new Error(`${markerFile} frontmatter must have "description" field`)
   }
+
+  if (!declaredFilesCoverMarker(filesDeclared, srcDir, markerFile)) {
+    throw new Error(
+      `package.json "files" must include "${markerFile}" or a directory entry whose tree contains it`,
+    )
+  }
+
+  resolvePublishFiles(srcDir, pkg, { markerFile })
 }
 
 /** Recursively list all files under dir, paths relative to dir. */
@@ -1721,6 +1821,144 @@ function listFilesRecursive(dir, baseDir = dir) {
     }
   }
   return files.sort()
+}
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function normalizePublishRelPath(p) {
+  return String(p).replace(/\\/g, '/').replace(/^\/+/, '')
+}
+
+/**
+ * Ignore rules for publish validation / tarball (posix paths relative to skill or rule root).
+ * - "dir/" matches that directory and everything under it
+ * - "foo" matches path foo or foo/…
+ * - "*" matches within one segment (no **)
+ */
+function pathMatchesPublishIgnore(relPath, patterns) {
+  const norm = normalizePublishRelPath(relPath)
+  const base = norm.includes('/') ? norm.slice(norm.lastIndexOf('/') + 1) : norm
+  for (let pat of patterns) {
+    pat = normalizePublishRelPath(pat)
+    if (!pat) continue
+    if (pat.endsWith('/')) {
+      const dir = pat.slice(0, -1)
+      if (norm === dir || norm.startsWith(dir + '/')) return true
+      continue
+    }
+    if (pat.includes('*')) {
+      const re = new RegExp(
+        '^' + pat.split('*').map((part) => escapeRegExp(part)).join('[^/]*') + '$',
+      )
+      if (re.test(norm) || re.test(base)) return true
+      continue
+    }
+    if (norm === pat || norm.startsWith(pat + '/')) return true
+  }
+  return false
+}
+
+/** Publish-time ignore patterns from package.json aipm.publishIgnore only. */
+function publishIgnorePatternsFromPkg(pkg) {
+  const merged = []
+  const fromPkg = pkg?.aipm?.publishIgnore
+  if (Array.isArray(fromPkg)) {
+    for (const p of fromPkg) {
+      if (typeof p === 'string' && p.trim()) merged.push(normalizePublishRelPath(p.trim()))
+    }
+  }
+  return merged
+}
+
+function listArtifactTreeFiles(srcDir) {
+  return listFilesRecursive(srcDir, srcDir).filter((f) => f !== '.aipm' && f !== 'files.json')
+}
+
+/**
+ * Expand package.json "files": plain files stay; directory entries become all files under them (non-ignored).
+ */
+function expandDeclaredPublishFiles(filesDeclared, srcDir, ignorePatterns) {
+  const out = new Set()
+  for (const raw of filesDeclared) {
+    if (typeof raw !== 'string' || !raw.trim()) {
+      throw new Error(`package.json "files" contains invalid entry: ${JSON.stringify(raw)}`)
+    }
+    const entry = normalizePublishRelPath(raw.trim())
+    const abs = join(srcDir, entry)
+    if (!existsSync(abs)) {
+      throw new Error(`package.json "files" lists "${entry}" but path does not exist`)
+    }
+    const st = statSync(abs)
+    if (st.isDirectory()) {
+      const inner = listFilesRecursive(abs, abs)
+      for (const f of inner) {
+        const rel = normalizePublishRelPath(join(entry, f))
+        if (!pathMatchesPublishIgnore(rel, ignorePatterns)) out.add(rel)
+      }
+    } else if (st.isFile()) {
+      if (pathMatchesPublishIgnore(entry, ignorePatterns)) {
+        throw new Error(
+          `package.json "files" lists "${entry}" but it matches a publish ignore pattern. Remove the pattern or the entry.`,
+        )
+      }
+      out.add(entry)
+    } else {
+      throw new Error(`package.json "files" lists "${entry}" which is not a file or directory`)
+    }
+  }
+  return [...out]
+}
+
+/** True if marker path is listed explicitly or lies under a declared directory entry. */
+function declaredFilesCoverMarker(filesDeclared, srcDir, markerFile) {
+  const entries = filesDeclared
+    .filter((f) => typeof f === 'string' && f.trim())
+    .map((f) => normalizePublishRelPath(f.trim()))
+  if (entries.includes(markerFile)) return true
+  for (const entry of entries) {
+    const abs = join(srcDir, entry)
+    if (!existsSync(abs) || !statSync(abs).isDirectory()) continue
+    if (markerFile.startsWith(entry + '/')) return true
+  }
+  return false
+}
+
+/**
+ * Ordered file list to publish: must match non-ignored files on disk exactly.
+ * @param {object} opts
+ * @param {string} opts.markerFile
+ */
+function resolvePublishFiles(srcDir, pkg, opts = {}) {
+  const markerFile = opts.markerFile ?? 'SKILL.md'
+  const filesDeclared = Array.isArray(pkg?.files) ? pkg.files : []
+  if (!filesDeclared.length) {
+    throw new Error('package.json "files" array is required and must not be empty')
+  }
+  const ignorePatterns = publishIgnorePatternsFromPkg(pkg)
+  const expanded = expandDeclaredPublishFiles(filesDeclared, srcDir, ignorePatterns)
+  const expandedSet = new Set(expanded)
+  const allOnDisk = listArtifactTreeFiles(srcDir)
+  const nonIgnoredOnDisk = allOnDisk.filter((f) => !pathMatchesPublishIgnore(f, ignorePatterns))
+  const diskSet = new Set(nonIgnoredOnDisk)
+
+  for (const f of nonIgnoredOnDisk) {
+    if (!expandedSet.has(f)) {
+      throw new Error(
+        `File "${f}" exists in directory but is not covered by package.json "files". Add a path, a parent directory entry, or list a pattern under aipm.publishIgnore.`,
+      )
+    }
+  }
+  for (const f of expanded) {
+    if (!diskSet.has(f)) {
+      throw new Error(`package.json "files" expands to "${f}" but file is missing or excluded by ignore rules`)
+    }
+  }
+
+  const rest = expanded.filter((f) => f !== markerFile).sort()
+  const files = expanded.includes(markerFile) ? [markerFile, ...rest] : [...expanded].sort()
+  return { files }
 }
 
 function printDeclaredAndInstalled(title, declared, installDir, markerFile) {
@@ -1746,14 +1984,18 @@ function printDeclaredAndInstalled(title, declared, installDir, markerFile) {
   }
 }
 
-function printDeclaredAndInstalledResolved(title, resolved, installDir, markerFile) {
+function printDeclaredAndInstalledResolved(title, resolved, installDir, kind) {
   const installed = new Set(listInstalledDirs(installDir))
   if (!resolved.length) {
     console.log(`${title}: (none)`)
   } else {
     console.log(`\n${title}:`)
     for (const { logicalName, installName, version } of resolved) {
-      const ok = existsSync(join(installDir, installName, markerFile))
+      const dir = join(installDir, installName)
+      const ok =
+        kind === 'skill'
+          ? existsSync(join(dir, 'SKILL.md'))
+          : ruleArtifactDirHasMarker(dir, logicalName)
       console.log(`- ${ok ? 'ok' : 'missing'} ${logicalName}@${version}`)
       installed.delete(installName)
     }
@@ -1966,8 +2208,6 @@ async function cmdPull(...args) {
   }
   const installPaths = getInstallPaths(config)
   const conflictState = { mode: parseConflictMode(args) }
-  const explicitSkills = new Set(Object.keys(config.skills ?? {}))
-  const explicitRules = new Set(Object.keys(config.rules ?? {}))
   const lock = readLockFile()
 
   ensureIdeDirs(installPaths)
@@ -1989,7 +2229,8 @@ async function cmdPull(...args) {
       installName,
       conflictState,
     })
-    if (result.installed && explicitSkills.has(packageName)) {
+    if (shouldPinArtifactVersionInProfile(result)) {
+      config.skills ??= {}
       config.skills[packageName] = version
     }
     recordLockEntry(newLock, 'skills', packageName, version, registryRef, result, lock)
@@ -2010,7 +2251,8 @@ async function cmdPull(...args) {
       installName,
       conflictState,
     })
-    if (result.installed && explicitRules.has(packageName)) {
+    if (shouldPinArtifactVersionInProfile(result)) {
+      config.rules ??= {}
       config.rules[packageName] = version
     }
     recordLockEntry(newLock, 'rules', packageName, version, registryRef, result, lock)
@@ -2070,8 +2312,8 @@ async function cmdList(...args) {
     return { logicalName: n, installName: r.installName, version: r.version }
   })
 
-  printDeclaredAndInstalledResolved('declared skills', skillsResolved, installPaths.skillInstallDir, 'SKILL.md')
-  printDeclaredAndInstalledResolved('declared rules', rulesResolved, installPaths.ruleInstallDir, 'RULE.md')
+  printDeclaredAndInstalledResolved('declared skills', skillsResolved, installPaths.skillInstallDir, 'skill')
+  printDeclaredAndInstalledResolved('declared rules', rulesResolved, installPaths.ruleInstallDir, 'rule')
 }
 
 async function cmdUpdate(name, ...args) {
@@ -2120,7 +2362,8 @@ async function cmdUpdate(name, ...args) {
       installName,
       conflictState,
     })
-    if (result.installed && (config.skills ?? {})[packageName] !== undefined) {
+    if (shouldPinArtifactVersionInProfile(result)) {
+      config.skills ??= {}
       config.skills[packageName] = version
     }
     recordLockEntry(newLock, 'skills', packageName, version, registryRef, result, lock)
@@ -2142,7 +2385,8 @@ async function cmdUpdate(name, ...args) {
       installName,
       conflictState,
     })
-    if (result.installed && (config.rules ?? {})[packageName] !== undefined) {
+    if (shouldPinArtifactVersionInProfile(result)) {
+      config.rules ??= {}
       config.rules[packageName] = version
     }
     recordLockEntry(newLock, 'rules', packageName, version, registryRef, result, lock)
@@ -2237,7 +2481,8 @@ async function cmdDoctor(...args) {
       )
       console.log(`[ok] registry contains rule ${packageName}@${version}`)
 
-      if (existsSync(join(installPaths.ruleInstallDir, installName, 'RULE.md'))) {
+      const ruleDir = join(installPaths.ruleInstallDir, installName)
+      if (ruleArtifactDirHasMarker(ruleDir, packageName)) {
         console.log(`[ok] installed rule is present: ${packageName}`)
       } else {
         console.log(`[fail] installed rule is missing: ${packageName}`)
@@ -2893,21 +3138,19 @@ async function cmdPush(...args) {
     validatePublishArtifact(srcDir, kindConfig, registryPath)
     assertPublishVersionVsRegistry(registry, kind, registryPath, version)
 
-    const markerFile = kindConfig.markerFile
-    const allFiles = listFilesRecursive(srcDir, srcDir)
-    if (!allFiles.includes(markerFile)) {
-      throw new Error(`${kind} ${installName} missing ${markerFile}`)
-    }
-
-    const files = [
-      markerFile,
-      ...allFiles.filter(
-        (f) => f !== markerFile && f !== '.aipm' && f !== 'files.json',
-      ),
-    ]
+    const pkgJson = JSON.parse(readFileSync(join(srcDir, 'package.json'), 'utf-8'))
+    const markerFile =
+      kind === 'rule' ? resolveRuleMarkerFromPkgFiles(pkgJson, registryPath, srcDir) : 'SKILL.md'
+    const { files } = resolvePublishFiles(srcDir, pkgJson, { markerFile })
     mkdirSync(destDir, { recursive: true })
 
-    const filesIntegrity = collectFilesIntegrityForPublish(files, srcDir, installName, registryPath)
+    const filesIntegrity = collectFilesIntegrityForPublish(
+      files,
+      srcDir,
+      installName,
+      registryPath,
+      kind === 'rule' ? { ruleMarkerFile: markerFile } : {},
+    )
     const relDir = `${kindConfig.registryDir}/${registryPath}/${version}`
     for (const file of files) {
       const srcPath = join(srcDir, file)
@@ -2915,10 +3158,10 @@ async function cmdPush(...args) {
       if (existsSync(srcPath)) {
         mkdirSync(dirname(destPath), { recursive: true })
         let content = readFileSync(srcPath, 'utf-8')
-        if (
-          (file === 'SKILL.md' || file === 'RULE.md') &&
-          installName !== registryPath
-        ) {
+        if (file === 'SKILL.md' && kind === 'skill' && installName !== registryPath) {
+          content = patchSkillNameInFrontmatter(content, registryPath)
+        }
+        if (kind === 'rule' && file === markerFile && installName !== registryPath) {
           content = patchSkillNameInFrontmatter(content, registryPath)
         }
         if (file === 'package.json') {
@@ -2944,13 +3187,13 @@ async function cmdPush(...args) {
     if (pkg) {
       pkg.versions = [...(pkg.versions ?? []), version].sort()
       pkg.latest = version
-      const markerPath = join(srcDir, kindConfig.markerFile)
+      const markerPath = join(srcDir, markerFile)
       if (existsSync(markerPath)) {
         const { description: fmDesc } = parseArtifactFrontmatter(readFileSync(markerPath, 'utf-8'))
         if (fmDesc) pkg.description = fmDesc
       }
     } else {
-      const markerPath = join(srcDir, kindConfig.markerFile)
+      const markerPath = join(srcDir, markerFile)
       const { description: fmDesc } = parseArtifactFrontmatter(readFileSync(markerPath, 'utf-8'))
       const logicalName = registryPath.includes('/') ? registryPath.split('/').pop() : registryPath
       registry[registryKey][registryPath] = {
@@ -3132,10 +3375,11 @@ function scaffoldArtifactDir(kind, installName, registryPath, version, descripti
 
   mkdirSync(srcDir, { recursive: true })
 
+  /** 展示用短名：@scope/pkg 取 pkg，与 IDE 目录名 installName（如 scope_pkg）分离 */
   const logicalName = registryPath.includes('/') ? registryPath.split('/').pop() : registryPath
   const desc = description ?? `${kind}: ${logicalName}`
 
-  const markerFile = kindConfig.markerFile
+  const markerFile = kind === 'rule' ? ruleMarkerFilename(registryPath) : kindConfig.markerFile
   const pkg = {
     name: registryPath,
     version,
@@ -3148,7 +3392,7 @@ function scaffoldArtifactDir(kind, installName, registryPath, version, descripti
   const markerContent =
     kind === 'skill'
       ? `---
-name: "${installName}"
+name: "${logicalName}"
 description: "${desc}"
 ---
 
@@ -3156,7 +3400,7 @@ description: "${desc}"
 
 <!-- Add skill content here. -->\n`
       : `---
-name: "${installName}"
+name: "${logicalName}"
 description: "${desc}"
 ---
 
@@ -3188,22 +3432,25 @@ async function publishToRemoteRegistry(kind, packageName, registryUrl, options =
   validatePublishArtifact(srcDir, kindConfig, registryPath)
   const version = readPublishVersionFromArtifact(srcDir)
 
-  const allFiles = listFilesRecursive(srcDir, srcDir).filter(
-    (f) => f !== '.aipm' && f !== 'files.json',
-  )
+  const pkgOnDisk = JSON.parse(readFileSync(join(srcDir, 'package.json'), 'utf-8'))
+  const markerFileForRule =
+    kind === 'rule' ? resolveRuleMarkerFromPkgFiles(pkgOnDisk, registryPath, srcDir) : null
+  const markerFile = kind === 'skill' ? 'SKILL.md' : (markerFileForRule ?? LEGACY_RULE_MARKER)
+
+  const { files: fileKeysSorted } = resolvePublishFiles(srcDir, pkgOnDisk, { markerFile })
   const files = {}
-  for (const f of allFiles) {
+  for (const f of fileKeysSorted) {
     const p = join(srcDir, f)
     if (existsSync(p)) {
       files[f] = readFileSync(p, 'utf-8')
     }
   }
-  const fileKeysSorted = Object.keys(files).sort()
   const filesIntegrityRemote = collectFilesIntegrityForPublish(
     fileKeysSorted,
     srcDir,
     installName,
     registryPath,
+    markerFileForRule ? { ruleMarkerFile: markerFileForRule } : {},
   )
   if (files['package.json']) {
     try {
@@ -3218,7 +3465,7 @@ async function publishToRemoteRegistry(kind, packageName, registryUrl, options =
     }
   }
 
-  const markerPath = join(srcDir, kindConfig.markerFile)
+  const markerPath = join(srcDir, markerFile)
   const { description: fmDesc } = parseArtifactFrontmatter(readFileSync(markerPath, 'utf-8'))
   const base = registryUrl.replace(/\/+$/, '')
   const apiUrl = `${base}/api/publish`
@@ -3340,11 +3587,6 @@ async function addArtifactToRegistry(kind, name, args, quiet = false, profileVer
     )
   }
 
-  const markerPath = join(srcDir, kindConfig.markerFile)
-  if (!existsSync(markerPath)) {
-    throw new Error(`${kind} '${installName}' missing ${kindConfig.markerFile}`)
-  }
-
   const installed = readInstalledVersion(srcDir)
   const { registryPath, logicalName } = parseInstallNameToRegistryPath(
     installName,
@@ -3353,23 +3595,18 @@ async function addArtifactToRegistry(kind, name, args, quiet = false, profileVer
 
   validateRegistryPath(registryPath, kind === 'skill' ? 'Skill' : 'Rule')
 
+  const pkgProbe = JSON.parse(readFileSync(join(srcDir, 'package.json'), 'utf-8'))
+  const markerFile =
+    kind === 'skill' ? 'SKILL.md' : resolveRuleMarkerFromPkgFiles(pkgProbe, registryPath, srcDir)
+  const markerPath = join(srcDir, markerFile)
+  if (!existsSync(markerPath)) {
+    throw new Error(`${kind} '${installName}' missing ${markerFile}`)
+  }
+
   validatePublishArtifact(srcDir, kindConfig, registryPath)
   const version = readPublishVersionFromArtifact(srcDir)
 
-  const allFiles = listFilesRecursive(srcDir, srcDir)
-  if (!allFiles.includes(kindConfig.markerFile)) {
-    throw new Error(`${kind} '${installName}' missing ${kindConfig.markerFile}`)
-  }
-
-  const files = [
-    kindConfig.markerFile,
-    ...allFiles.filter(
-      (f) =>
-        f !== kindConfig.markerFile &&
-        f !== '.aipm' &&
-        f !== 'files.json',
-    ),
-  ]
+  const { files } = resolvePublishFiles(srcDir, pkgProbe, { markerFile })
   const destDir = join(registryBase, kindConfig.registryDir, registryPath, version)
 
   const registryJsonPath = join(registryBase, 'registry.json')
@@ -3383,7 +3620,13 @@ async function addArtifactToRegistry(kind, name, args, quiet = false, profileVer
   }
 
   mkdirSync(destDir, { recursive: true })
-  const filesIntegrity = collectFilesIntegrityForPublish(files, srcDir, installName, registryPath)
+  const filesIntegrity = collectFilesIntegrityForPublish(
+    files,
+    srcDir,
+    installName,
+    registryPath,
+    kind === 'rule' ? { ruleMarkerFile: markerFile } : {},
+  )
   const relDir = `${kindConfig.registryDir}/${registryPath}/${version}`
   for (const file of files) {
     const srcPath = join(srcDir, file)
@@ -3408,8 +3651,8 @@ async function addArtifactToRegistry(kind, name, args, quiet = false, profileVer
     }
   }
 
-  const content = readFileSync(markerPath, 'utf-8')
-  const { description: fmDesc } = parseArtifactFrontmatter(content)
+  const markerContent = readFileSync(markerPath, 'utf-8')
+  const { description: fmDesc } = parseArtifactFrontmatter(markerContent)
   const description = fmDesc ?? `${kind}: ${logicalName}`
 
   registry[registryKey] ??= {}
@@ -3455,7 +3698,8 @@ async function cmdInitSkill(...args) {
   if (!process.stdin.isTTY) {
     throw new Error('aipm init-skill requires interactive mode. Run in a terminal.')
   }
-  await ensureLocalIdeConfigured(args)
+  const { flagArgs, positionals } = parseInitArtifactCliArgs(args)
+  await ensureLocalIdeConfigured(flagArgs)
   const config = readConfig()
   const installPaths = getInstallPaths(config)
   ensureIdeDirs(installPaths)
@@ -3463,10 +3707,19 @@ async function cmdInitSkill(...args) {
   const rl = createInterface({ input: process.stdin, output: process.stdout })
   console.log('\nCreate a new skill package (npm-style: @scope/name or scope_name)\n')
 
-  const name = await question(rl, 'Package name', '')
+  let name
+  const fromCli = positionals[0] != null && String(positionals[0]).trim() !== ''
+  if (fromCli) {
+    const spec = parseSearchQuerySpec(String(positionals[0]).trim())
+    name = (spec.nameQuery || String(positionals[0]).trim()).trim()
+  } else {
+    name = await question(rl, 'Package name', '')
+  }
   if (!name.trim()) {
     rl.close()
-    throw new Error('Package name is required')
+    throw new Error(
+      'Package name is required. Usage: aipm init-skill [--ide=…] [@scope/name | scope_name]',
+    )
   }
   const registryPath =
     name.startsWith('@') && name.includes('/') ? name.trim() : installNameToRegistryPath(name.trim())
@@ -3502,7 +3755,8 @@ async function cmdInitRule(...args) {
   if (!process.stdin.isTTY) {
     throw new Error('aipm init-rule requires interactive mode. Run in a terminal.')
   }
-  await ensureLocalIdeConfigured(args)
+  const { flagArgs, positionals } = parseInitArtifactCliArgs(args)
+  await ensureLocalIdeConfigured(flagArgs)
   const config = readConfig()
   const installPaths = getInstallPaths(config)
   ensureIdeDirs(installPaths)
@@ -3510,10 +3764,19 @@ async function cmdInitRule(...args) {
   const rl = createInterface({ input: process.stdin, output: process.stdout })
   console.log('\nCreate a new rule package (npm-style: @scope/name or scope_name)\n')
 
-  const name = await question(rl, 'Package name', '')
+  let name
+  const fromCli = positionals[0] != null && String(positionals[0]).trim() !== ''
+  if (fromCli) {
+    const spec = parseSearchQuerySpec(String(positionals[0]).trim())
+    name = (spec.nameQuery || String(positionals[0]).trim()).trim()
+  } else {
+    name = await question(rl, 'Package name', '')
+  }
   if (!name.trim()) {
     rl.close()
-    throw new Error('Package name is required')
+    throw new Error(
+      'Package name is required. Usage: aipm init-rule [--ide=…] [@scope/name | scope_name]',
+    )
   }
   const registryPath =
     name.startsWith('@') && name.includes('/') ? name.trim() : installNameToRegistryPath(name.trim())
@@ -3541,7 +3804,10 @@ async function cmdInitRule(...args) {
   config.rules[registryPath] = version
   writeConfig(config)
 
-  console.log(`\nRule created. Edit ${relative(ROOT, join(srcDir, 'RULE.md'))} then run \`aipm publish ${registryPath}\` to publish.`)
+  const ruleMarker = ruleMarkerFilename(registryPath)
+  console.log(
+    `\nRule created. Edit ${relative(ROOT, join(srcDir, ruleMarker))} then run \`aipm publish ${registryPath}\` to publish.`,
+  )
 }
 
 /**
@@ -3916,6 +4182,8 @@ Primary commands:
                           Update one artifact or all artifacts (same registry index refresh as install)
   publish [name] [--registry PATH] [-v] [--publish-update-profile=ask|yes|no]
                           Sync to Registry (default: package sourceRegistry; -v verbose)
+                          package.json "files" may list files or directories (directories expand to all non-ignored files under them).
+                          Publish ignores: aipm.publishIgnore (string[] in package.json only; * matches one path segment, trailing / for directories).
                           After success: refresh bundle cache for each registry touched; sync aipm_profile (see publish-update-profile)
   registry                List registries for this project (priority order) and refresh registry.json in ~/.aipm/cache
   doctor                  Check config, registry, and local installs
@@ -3923,8 +4191,8 @@ Primary commands:
   uninstall [--yes]       Remove all aipm-managed skill & rule dirs for current IDE; clear skills/rules/profile in config; empty lock (lists paths; confirm or --yes)
 
 Create new packages (interactive):
-  init-skill              Create new skill (prompts: name, description, version)
-  init-rule               Create new rule (prompts: name, description, version)
+  init-skill [@scope/name|scope_name]  Create skill; optional arg skips package name prompt (--ide=…)
+  init-rule [@scope/name|scope_name]   Create rule; same as init-skill
 
 Registry commands (local registry only):
   unpublish-skill [--registry PATH|URL] <name>  Remove skill (local data dir or HTTP + POST /api/unpublish)
