@@ -29,6 +29,17 @@ aicm .
 aicm . --scan
 ```
 
+### 生成可折叠/可搜索的 HTML 报告
+
+```bash
+aicm . --html                            # 生成 aicm-report.html 并自动用默认浏览器打开
+aicm . --html=/tmp/report.html --no-open  # 指定输出路径，不自动打开
+```
+
+浏览器里打开的是一个静态单文件页面：目录可折叠展开（默认全部展开，也可一键「展开全部/折叠全部」），顶部搜索框按文件名/路径/描述实时过滤，命中项高亮、自动展开其所在的父级目录。适合规范文件较多、用命令行树状输出不便浏览的场景。
+
+**点击文件名**会打开这个文件渲染后的 Markdown 预览（标题层级、表格、代码块、引用块等都有排版），而不是浏览器默认展示的纯文本。原理：内置了一份离线的 [marked.js](https://github.com/markedjs/marked)（`aicm/assets/marked.min.js`，随包分发，不联网），生成报告时把每个规范文件的正文（已剥离 frontmatter）渲染成一个独立 HTML 页，存到 `<报告名>_files/` 目录下（如 `aicm-report_files/context/coding-standards.md.html`），预览页顶部有「查看原始 Markdown 源文件」链接可以跳回原始 `.md`。`<报告名>_files/` 目录随报告一起生成，属于本地产物，不需要提交到 git（各项目 `.gitignore` 已加对应规则）。
+
 ### 检测与 CLAUDE.md 的重复内容
 
 ```bash
@@ -116,4 +127,4 @@ cat /tmp/rules-check.txt
 支持，工具使用 `rglob("*.md")` 递归扫描，子目录内的文件会被自动发现。
 
 **Q：aicm 源码在哪里？**
-`/Users/zed/Developer/RoleClaw/aicm/`，以 editable 模式安装，直接修改源码即时生效。
+`RoleClaw/aicm/`（以 editable 模式安装，直接修改源码即时生效，具体本机路径见 `pip show aicm` 的 `Location`）。
