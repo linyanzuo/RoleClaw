@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # AIPM Installer - macOS / Linux
 # Only installs global aipm command. IDE and role are selected per-project via aipm init.
-# Windows: use scripts/install-aipm.ps1
+# Windows: use aipm/install-aipm.ps1
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AIPM_REPO="$(cd "${SCRIPT_DIR}/.." && pwd)"
-AIPM_ENTRY="${AIPM_REPO}/scripts/aipm.mjs"
+AIPM_ENTRY="${SCRIPT_DIR}/aipm.mjs"
 
 print_title() {
   echo "========================================="

@@ -1,6 +1,6 @@
 @echo off
 REM AIPM Installer for Windows - bypasses PowerShell execution policy
-REM Run: scripts\install-aipm.bat
+REM Run: aipm\install-aipm.bat
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install-aipm.ps1"
 set "PATH=%USERPROFILE%\bin;%PATH%"
 echo.
