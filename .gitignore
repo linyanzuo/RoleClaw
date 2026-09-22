@@ -11,3 +11,7 @@ node_modules/
 
 # Temp / check directories
 tmp-codex-check/
+
+# aicm 生成的 HTML 报告（本地查看用，无需追踪）
+aicm-report.html
+aicm-report_files/
