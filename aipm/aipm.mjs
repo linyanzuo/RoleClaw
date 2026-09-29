@@ -3261,13 +3261,9 @@ async function cmdPush(...args) {
         if (isNew) {
           await addArtifactToRegistry('skill', packageName, args, publishQuiet, profileVersionSyncQueue)
         } else {
-          const { registryPath, installName: inName } = resolveArtifactPath(
-            registry,
-            'skill',
-            packageName,
-            version,
-          )
-          pushArtifact('skill', inName, registryPath, version, registryRef, registryBase, registry, publishQuiet)
+          // 新版本尚未进入 registry，不能用 resolveArtifactPath（它要求版本已发布）
+          validateRegistryPath(packageName, 'Skill')
+          pushArtifact('skill', installName, packageName, version, registryRef, registryBase, registry, publishQuiet)
         }
       }
       publishedRegistryRefs.add(resolveRegistryRef(registryRef))
@@ -3314,13 +3310,9 @@ async function cmdPush(...args) {
         if (isNew) {
           await addArtifactToRegistry('rule', packageName, args, publishQuiet, profileVersionSyncQueue)
         } else {
-          const { registryPath, installName: inName } = resolveArtifactPath(
-            registry,
-            'rule',
-            packageName,
-            version,
-          )
-          pushArtifact('rule', inName, registryPath, version, registryRef, registryBase, registry, publishQuiet)
+          // 新版本尚未进入 registry，不能用 resolveArtifactPath（它要求版本已发布）
+          validateRegistryPath(packageName, 'Rule')
+          pushArtifact('rule', installName, packageName, version, registryRef, registryBase, registry, publishQuiet)
         }
       }
       publishedRegistryRefs.add(resolveRegistryRef(registryRef))

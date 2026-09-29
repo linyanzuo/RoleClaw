@@ -263,3 +263,4 @@ publish 使用的 version 来自：`config.skills[packageName]` 或 `config.rule
 - 元数据扩展优先放在 `registry.json`、`profiles/*.json`
 - 新增命令时同步补充 `doctor` 对应检查项
 - 命令行为变更后，同步更新本表与示例
+- 改动后运行冒烟测试：`node --test aipm/test/*.test.mjs`（以临时本地目录作 registry 跑 install / publish / update，CI 见 `.github/workflows/aipm.yml`）
