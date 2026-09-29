@@ -16,7 +16,9 @@
 | `init` | 交互式创建 aipm_profile.json | 选择 registry、IDE、profile |
 | `install` | 按 profile 把声明的 Skills/Rules 安装到目标 IDE 目录 | 支持 cursor/codex/trae/windsurf |
 | `list` | 查看声明与安装状态 | 同时展示缺失与额外安装项 |
-| `update [name]` | 更新到最新版本 | 支持指定单个 artifact 或全部更新 |
+| `update [name] [--latest]` | 忽略 lock，按版本约束升级 | `latest` → 最新版；`^x.y.z` → 兼容范围内最新；`--latest` 跨主版本；精确版本（固定）不动 |
+| `pin <name> [version]` | 固定到精确版本 | 默认取 lock 中的版本；指定版本需已发布，之后 `aipm install` 生效 |
+| `unpin [name]` | 解除固定：`x.y.z` → `^x.y.z` | 不带 name 解除全部，用于迁移旧版 install 写入的精确版本 |
 | `use [profile-id]` | 切换配置单 | 无参数时列出可用 profile |
 | `publish [name]` | 把 IDE 中的 Skill/Rule 回写到 Registry | **本地路径**直接写盘；**HTTP（aipm-registry）** 使用 **tgz + multipart** 上传，已发布版本不可覆盖 |
 | `init-skill` | 交互式创建新 Skill | 提示 name、description、version |
@@ -119,6 +121,21 @@ rules = { ...profileRules, ...explicitRules }
 ```
 
 ---
+
+### 版本约束与升级
+
+`aipm_profile.json` / profile 中每个包的版本约束（与 npm 一致）：
+
+| 约束 | 含义 | `install` | `update` | `update --latest` |
+|------|------|-----------|----------|-------------------|
+| `latest` | 跟随最新版 | 沿用 lock | 升到 registry latest | 同左 |
+| `^x.y.z` | 兼容范围 | lock 满足范围则沿用 | 升到范围内最新，约束下限推进为 `^新版本` | 升到 registry latest，约束改为 `^新版本` |
+| `x.y.z` | **固定版本** | 安装该版本 | 不动（有更新版本时在结尾提示） | 不动 |
+
+- `install` 保证可复现（优先 lock），`update` 忽略 lock 按约束重新解析并刷新 lock。
+- install / update 写回 aipm_profile 时**不会**把 `latest` / `^` 改写成精确版本；未声明约束（如 `install-skill` 不带版本）记为 `^解析版本`。
+- publish 同步 aipm_profile 时：原为固定版本则固定到新发布版本，否则写 `^新版本`（`latest` 保持不变）。
+- 旧版本 aipm 的 install 会把所有包写成精确版本，升级后这些包会被视为固定版本；执行 `aipm unpin` 一次即可全部解除。
 
 ## 4) 安装逻辑
 

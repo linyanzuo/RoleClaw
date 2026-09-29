@@ -100,6 +100,24 @@ function assertOk(result, label) {
   assert.equal(result.status, 0, `${label} exited with ${result.status}\n${result.output}`)
 }
 
+/** 在 author 项目中修改 skill 并发布新版本。 */
+function publishSkillVersion(version) {
+  const skillDir = join(author, '.cursor/skills/demo_hello')
+  writeText(join(skillDir, 'SKILL.md'), frontmatterDoc('demo_hello', 'hello skill', `# hello v${version}`))
+  const pkg = readJson(join(skillDir, 'package.json'))
+  pkg.version = version
+  writeJson(join(skillDir, 'package.json'), pkg)
+  return aipm(author, 'publish', SKILL, '--publish-update-profile=yes')
+}
+
+function installedSkillBody(project) {
+  return readFileSync(join(project, '.cursor/skills/demo_hello/SKILL.md'), 'utf-8')
+}
+
+function declaredSkillSpec(project) {
+  return readJson(join(project, 'aipm_profile.json')).skills[SKILL]
+}
+
 describe('aipm smoke: local registry', () => {
   before(() => {
     root = mkdtempSync(join(tmpdir(), 'aipm-smoke-'))
@@ -137,6 +155,9 @@ describe('aipm smoke: local registry', () => {
 
       const ideProfile = readJson(join(project, '.aipm/profile.json'))
       assert.equal(ideProfile.ide, 'cursor')
+
+      // 配置单中的 latest 约束原样记录，不被改写成固定版本
+      assert.equal(declaredSkillSpec(project), 'latest')
     }
   })
 
@@ -157,13 +178,7 @@ describe('aipm smoke: local registry', () => {
   })
 
   test('publish: new version of an existing skill lands in the local registry', () => {
-    const skillDir = join(author, '.cursor/skills/demo_hello')
-    writeText(join(skillDir, 'SKILL.md'), frontmatterDoc('demo_hello', 'hello skill', '# hello v1.1.0'))
-    const pkg = readJson(join(skillDir, 'package.json'))
-    pkg.version = '1.1.0'
-    writeJson(join(skillDir, 'package.json'), pkg)
-
-    assertOk(aipm(author, 'publish', SKILL, '--publish-update-profile=yes'), 'aipm publish')
+    assertOk(publishSkillVersion('1.1.0'), 'aipm publish')
 
     const index = readJson(join(registry, 'registry.json'))
     assert.equal(index.packages[SKILL].latest, '1.1.0')
@@ -175,7 +190,8 @@ describe('aipm smoke: local registry', () => {
     assert.equal(publishedPkg.version, '1.1.0')
     assert.ok(publishedPkg.filesIntegrity?.['SKILL.md'], 'filesIntegrity recorded')
 
-    assert.equal(readJson(join(author, 'aipm_profile.json')).skills[SKILL], '1.1.0')
+    // latest 约束保持不变，不会被改成固定版本
+    assert.equal(declaredSkillSpec(author), 'latest')
   })
 
   test('publish: re-publishing the same version is rejected', () => {
@@ -206,23 +222,68 @@ describe('aipm smoke: local registry', () => {
     assert.ok(existsSync(join(registry, 'assets/rules', newRule, '0.1.0/RULE.md')))
   })
 
-  test('update: consumer picks up the newly published version', () => {
-    // 模拟 consumer 从仓库拉取了 author 提交的 aipm_profile.json（版本已升到 1.1.0）
-    const cfgPath = join(consumer, 'aipm_profile.json')
-    const cfg = readJson(cfgPath)
-    cfg.skills[SKILL] = '1.1.0'
-    writeJson(cfgPath, cfg)
+  test('install keeps the locked version; update upgrades to registry latest', () => {
+    assertOk(aipm(consumer, 'install'), 'aipm install')
+    assert.match(installedSkillBody(consumer), /hello v1\.0\.0/, 'install honours the lock')
 
     const r = aipm(consumer, 'update')
     assertOk(r, 'aipm update')
     assert.match(r.output, /demo_hello@1\.1\.0/)
-
-    const skillMd = readFileSync(join(consumer, '.cursor/skills/demo_hello/SKILL.md'), 'utf-8')
-    assert.match(skillMd, /hello v1\.1\.0/)
+    assert.match(installedSkillBody(consumer), /hello v1\.1\.0/)
+    assert.equal(declaredSkillSpec(consumer), 'latest')
     const lock = readJson(join(consumer, 'aipm_profile.lock.json'))
     assert.equal(lock.skills[SKILL].version, '1.1.0')
     assert.equal(lock.rules[RULE].version, '1.0.0')
 
     assertOk(aipm(consumer, 'doctor'), 'aipm doctor after update')
+  })
+
+  test('pin: update keeps a pinned version and reports newer ones', () => {
+    assertOk(aipm(consumer, 'pin', SKILL), 'aipm pin')
+    assert.equal(declaredSkillSpec(consumer), '1.1.0')
+
+    assertOk(publishSkillVersion('1.2.0'), 'publish 1.2.0')
+
+    const r = aipm(consumer, 'update')
+    assertOk(r, 'aipm update (pinned)')
+    assert.match(installedSkillBody(consumer), /hello v1\.1\.0/)
+    assert.match(r.output, /Pinned[\s\S]*@demo\/hello@1\.1\.0 \(latest 1\.2\.0\)/)
+    assert.equal(declaredSkillSpec(consumer), '1.1.0')
+  })
+
+  test('pin: explicit version is validated and applied by install', () => {
+    const bad = aipm(consumer, 'pin', 'demo_hello', '9.9.9')
+    assert.notEqual(bad.status, 0, `expected failure\n${bad.output}`)
+
+    assertOk(aipm(consumer, 'pin', 'demo_hello', '1.0.0'), 'aipm pin 1.0.0')
+    assert.equal(declaredSkillSpec(consumer), '1.0.0')
+    assertOk(aipm(consumer, 'install', '--on-conflict=overwrite'), 'aipm install pinned downgrade')
+    assert.match(installedSkillBody(consumer), /hello v1\.0\.0/)
+    assert.equal(readJson(join(consumer, 'aipm_profile.lock.json')).skills[SKILL].version, '1.0.0')
+  })
+
+  test('unpin: update upgrades within ^ range; --latest crosses major versions', () => {
+    const r = aipm(consumer, 'unpin')
+    assertOk(r, 'aipm unpin')
+    assert.equal(declaredSkillSpec(consumer), '^1.0.0')
+
+    assertOk(publishSkillVersion('2.0.0'), 'publish 2.0.0')
+
+    assertOk(aipm(consumer, 'update'), 'aipm update (^ range)')
+    assert.match(installedSkillBody(consumer), /hello v1\.2\.0/)
+    assert.equal(declaredSkillSpec(consumer), '^1.2.0')
+
+    assertOk(aipm(consumer, 'update', '--latest'), 'aipm update --latest')
+    assert.match(installedSkillBody(consumer), /hello v2\.0\.0/)
+    assert.equal(declaredSkillSpec(consumer), '^2.0.0')
+    assert.equal(readJson(join(consumer, 'aipm_profile.lock.json')).skills[SKILL].version, '2.0.0')
+  })
+
+  test('install-rule without version records a ^ range, with version pins it', () => {
+    assertOk(aipm(consumer, 'install-rule', '@demo/extra'), 'aipm install-rule')
+    assert.equal(readJson(join(consumer, 'aipm_profile.json')).rules['@demo/extra'], '^0.1.0')
+
+    assertOk(aipm(consumer, 'install-rule', '@demo/extra', '0.1.0'), 'aipm install-rule 0.1.0')
+    assert.equal(readJson(join(consumer, 'aipm_profile.json')).rules['@demo/extra'], '0.1.0')
   })
 })
