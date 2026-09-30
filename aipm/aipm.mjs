@@ -1126,7 +1126,7 @@ async function applyPublishProfileVersionSync(updates, args) {
   for (const u of updates) {
     const key = u.kind === 'skill' ? 'skills' : 'rules'
     cfg[key] ??= {}
-    cfg[key][u.registryPath] = u.version
+    cfg[key][u.registryPath] = versionSpecAfterPublish(cfg[key][u.registryPath], u.version)
   }
   writeConfig(cfg)
   console.log(`[publish] Updated ${relative(ROOT, PROFILE_CONFIG_FILE)} (published version(s)).`)
@@ -1664,6 +1664,31 @@ async function installArtifact(baseRef, kind, registryPath, version, options = {
 /** 是否把本次解析到的版本写回 aipm_profile（已安装或与磁盘一致，而非用户跳过/拒绝覆盖）。 */
 function shouldPinArtifactVersionInProfile(result) {
   return Boolean(result?.installed || result?.outcome === 'unchanged')
+}
+
+/**
+ * 版本约束语义（与 npm 一致）：
+ * - 精确版本 x.y.z：固定版本，update 不会改动（aipm unpin 解除）
+ * - ^x.y.z：兼容范围内可升级；update --latest 可跨主版本
+ * - latest：始终跟随 registry 最新版
+ */
+function isPinnedVersionSpec(spec) {
+  return spec != null && parseSemver(spec) != null
+}
+
+/**
+ * install/update 成功后写回 aipm_profile 的约束：固定版本与 latest 原样保留；
+ * ^ 约束把下限推进到本次解析版本；未声明或 install-skill 未指定版本时记为 ^resolved。
+ */
+function versionSpecToRecord(spec, resolvedVersion) {
+  const s = spec == null ? '' : String(spec).trim()
+  if (!s || s.startsWith('^')) return parseSemver(resolvedVersion) ? `^${resolvedVersion}` : resolvedVersion
+  return s
+}
+
+/** publish 后同步 aipm_profile：原为固定版本则固定到新版本，否则同 versionSpecToRecord。 */
+function versionSpecAfterPublish(spec, publishedVersion) {
+  return isPinnedVersionSpec(spec) ? publishedVersion : versionSpecToRecord(spec, publishedVersion)
 }
 
 /** Load profile (配置单) from registry. Returns { skills, rules } or null if not found. */
@@ -2231,7 +2256,7 @@ async function cmdPull(...args) {
     })
     if (shouldPinArtifactVersionInProfile(result)) {
       config.skills ??= {}
-      config.skills[packageName] = version
+      config.skills[packageName] = versionSpecToRecord(requestedVersion, version)
     }
     recordLockEntry(newLock, 'skills', packageName, version, registryRef, result, lock)
     pushInstallSummaryLine(summary, 'skill', installName, version, result)
@@ -2253,7 +2278,7 @@ async function cmdPull(...args) {
     })
     if (shouldPinArtifactVersionInProfile(result)) {
       config.rules ??= {}
-      config.rules[packageName] = version
+      config.rules[packageName] = versionSpecToRecord(requestedVersion, version)
     }
     recordLockEntry(newLock, 'rules', packageName, version, registryRef, result, lock)
     pushInstallSummaryLine(summary, 'rule', installName, version, result)
@@ -2316,7 +2341,29 @@ async function cmdList(...args) {
   printDeclaredAndInstalledResolved('declared rules', rulesResolved, installPaths.ruleInstallDir, 'rule')
 }
 
-async function cmdUpdate(name, ...args) {
+/** 按 @scope/name 或 scope_name 在已声明的 skills/rules 中查找目标；name 为空时返回全部。 */
+function findDeclaredTargets(skills, rules, name) {
+  const pick = (map) =>
+    name
+      ? (map[name] ? [name] : Object.keys(map).filter((k) => registryPathToInstallName(k) === name))
+      : Object.keys(map)
+  const skillTargets = pick(skills)
+  const ruleTargets = pick(rules)
+  if (name && !skillTargets.length && !ruleTargets.length) {
+    throw new Error(`'${name}' is not declared in current skills/rules`)
+  }
+  return { skillTargets, ruleTargets }
+}
+
+/**
+ * update 不沿用 lock：按声明的约束重新解析 registry 并刷新 lock。
+ * - latest / ^x.y.z：升级到约束内最新版；--latest 时忽略 ^ 上界，直接取 registry latest
+ * - 精确版本（固定）：保持不动，若有更新版本则在结尾提示
+ */
+async function cmdUpdate(...rawArgs) {
+  const name = rawArgs.find((a) => !a.startsWith('-'))
+  const args = rawArgs.filter((a) => a.startsWith('-'))
+  const toLatest = args.includes('--latest')
   await ensureLocalIdeConfigured(args)
   const config = readConfig()
   const { skills, rules } = await resolveDesiredArtifacts(config)
@@ -2326,77 +2373,125 @@ async function cmdUpdate(name, ...args) {
       verbose: wantsVerboseFromInstallArgs(args),
     })
   }
-  const registry = await fetchMergedRegistry(registries)
   const installPaths = getInstallPaths(config)
   const conflictState = { mode: parseConflictMode(args) }
 
   ensureIdeDirs(installPaths)
 
-  const skillTargets = name
-    ? (skills[name] ? [name] : Object.keys(skills).filter((k) => registryPathToInstallName(k) === name))
-    : Object.keys(skills)
-  const ruleTargets = name
-    ? (rules[name] ? [name] : Object.keys(rules).filter((k) => registryPathToInstallName(k) === name))
-    : Object.keys(rules)
-
-  if (name && !skillTargets.length && !ruleTargets.length) {
-    throw new Error(`'${name}' is not declared in current skills/rules`)
-  }
+  const { skillTargets, ruleTargets } = findDeclaredTargets(skills, rules, name)
 
   const lock = readLockFile()
   const newLock = { skills: {}, rules: {} }
   const summary = { updated: [], unchanged: [], notUpdated: [] }
+  const pinnedBehind = []
 
-  for (const packageName of skillTargets) {
-    const requested = skills[packageName] ?? 'latest'
-    const { registryRef, version } = await resolveArtifactWithLock(
-      lock,
+  async function updateOne(kind, packageName, requested) {
+    const kindKey = kind === 'skill' ? 'skills' : 'rules'
+    const pinned = isPinnedVersionSpec(requested)
+    const request = toLatest && !pinned ? 'latest' : requested
+    const { registryRef, registry, version } = await findRegistryForArtifact(
       registries,
       packageName,
-      'skill',
-      requested,
+      kind,
+      request,
     )
     const installName = registryPathToInstallName(packageName)
-    ARTIFACT_KIND.skill.installDir = installPaths.skillInstallDir
-    const result = await installArtifact(registryRef, 'skill', packageName, version, {
+    ARTIFACT_KIND[kind].installDir =
+      kind === 'skill' ? installPaths.skillInstallDir : installPaths.ruleInstallDir
+    const result = await installArtifact(registryRef, kind, packageName, version, {
       installName,
       conflictState,
     })
     if (shouldPinArtifactVersionInProfile(result)) {
-      config.skills ??= {}
-      config.skills[packageName] = version
+      config[kindKey] ??= {}
+      config[kindKey][packageName] = versionSpecToRecord(requested, version)
     }
-    recordLockEntry(newLock, 'skills', packageName, version, registryRef, result, lock)
-    pushInstallSummaryLine(summary, 'skill', installName, version, result)
+    recordLockEntry(newLock, kindKey, packageName, version, registryRef, result, lock)
+    pushInstallSummaryLine(summary, kind, installName, version, result)
+    const latest = registry?.[ARTIFACT_KIND[kind].registryKey]?.[packageName]?.latest
+    if (pinned && latest && semverCompare(latest, version) === 1) {
+      pinnedBehind.push(`${kind} ${packageName}@${version} (latest ${latest})`)
+    }
   }
 
+  for (const packageName of skillTargets) {
+    await updateOne('skill', packageName, skills[packageName] ?? 'latest')
+  }
   for (const packageName of ruleTargets) {
-    const requested = rules[packageName] ?? 'latest'
-    const { registryRef, version } = await resolveArtifactWithLock(
-      lock,
-      registries,
-      packageName,
-      'rule',
-      requested,
-    )
-    const installName = registryPathToInstallName(packageName)
-    ARTIFACT_KIND.rule.installDir = installPaths.ruleInstallDir
-    const result = await installArtifact(registryRef, 'rule', packageName, version, {
-      installName,
-      conflictState,
-    })
-    if (shouldPinArtifactVersionInProfile(result)) {
-      config.rules ??= {}
-      config.rules[packageName] = version
-    }
-    recordLockEntry(newLock, 'rules', packageName, version, registryRef, result, lock)
-    pushInstallSummaryLine(summary, 'rule', installName, version, result)
+    await updateOne('rule', packageName, rules[packageName] ?? 'latest')
   }
 
   writeConfig(config)
   mergeAndWriteLock(lock, newLock, skills, rules)
   printInstallSummary(summary)
+  if (pinnedBehind.length) {
+    console.log('Pinned (kept at fixed version; run `aipm unpin <name>` to allow upgrades):')
+    for (const line of pinnedBehind) console.log(`  · ${line}`)
+  }
   console.log('update complete')
+}
+
+/** aipm pin <name> [version]：把约束改为精确版本（默认取当前 lock 中的版本），之后 update 不再升级它。 */
+async function cmdPin(...rawArgs) {
+  const [name, versionArg] = rawArgs.filter((a) => !a.startsWith('-'))
+  if (!name) {
+    throw new Error('Usage: aipm pin <name> [version]  (name: @scope/name or scope_name)')
+  }
+  const config = readConfig()
+  const { skills, rules } = await resolveDesiredArtifacts(config)
+  const { skillTargets, ruleTargets } = findDeclaredTargets(skills, rules, name)
+  const lock = readLockFile()
+  const registries = getRegistries(config)
+  const targets = [
+    ...skillTargets.map((p) => ['skill', 'skills', p]),
+    ...ruleTargets.map((p) => ['rule', 'rules', p]),
+  ]
+  let needsInstall = false
+  for (const [kind, kindKey, packageName] of targets) {
+    const lockedVersion = lock?.[kindKey]?.[packageName]?.version
+    const version = versionArg ? String(versionArg).trim() : lockedVersion
+    if (!version) {
+      throw new Error(`${packageName} is not installed yet; specify a version: aipm pin ${name} <version>`)
+    }
+    if (!parseSemver(version)) {
+      throw new Error(`Pin version must be an exact semver x.y.z (got "${version}")`)
+    }
+    await findRegistryForArtifact(registries, packageName, kind, version)
+    config[kindKey] ??= {}
+    config[kindKey][packageName] = version
+    if (version !== lockedVersion) needsInstall = true
+    console.log(`pinned ${kind} ${packageName}@${version}`)
+  }
+  writeConfig(config)
+  if (needsInstall) console.log('Run `aipm install` to apply the pinned version.')
+}
+
+/** aipm unpin [name]：精确版本改为 ^版本（兼容范围内可升级）；不带 name 时解除全部固定版本。 */
+async function cmdUnpin(...rawArgs) {
+  const name = rawArgs.find((a) => !a.startsWith('-'))
+  const config = readConfig()
+  const { skills, rules } = await resolveDesiredArtifacts(config)
+  const { skillTargets, ruleTargets } = findDeclaredTargets(skills, rules, name)
+  let count = 0
+  for (const [kindKey, map, targets] of [
+    ['skills', skills, skillTargets],
+    ['rules', rules, ruleTargets],
+  ]) {
+    for (const packageName of targets) {
+      const spec = map[packageName]
+      if (!isPinnedVersionSpec(spec)) {
+        if (name) console.log(`${packageName} is not pinned (${spec})`)
+        continue
+      }
+      config[kindKey] ??= {}
+      config[kindKey][packageName] = `^${String(spec).trim()}`
+      count++
+      console.log(`unpinned ${packageName}: ${spec} -> ^${String(spec).trim()}`)
+    }
+  }
+  writeConfig(config)
+  if (count) console.log('Run `aipm update` to upgrade within the new ranges.')
+  else if (!name) console.log('No pinned skills/rules.')
 }
 
 async function cmdDoctor(...args) {
@@ -2664,7 +2759,8 @@ async function cmdInstallSkill(...args) {
   await installArtifact(registryRef, 'skill', name, resolvedVersion, { installName })
 
   config.skills ??= {}
-  config.skills[name] = resolvedVersion
+  // 未指定版本记为 ^resolved（可升级）；指定精确版本即固定版本
+  config.skills[name] = versionSpecToRecord(version === 'latest' ? '' : version, resolvedVersion)
   writeConfig(config)
   mergeAndWriteLock(lock, { skills: { [name]: { version: resolvedVersion, registry: registryRef } } }, config.skills, config.rules ?? {})
 
@@ -2714,7 +2810,8 @@ async function cmdInstallRule(...args) {
   await installArtifact(registryRef, 'rule', name, resolvedVersion, { installName })
 
   config.rules ??= {}
-  config.rules[name] = resolvedVersion
+  // 未指定版本记为 ^resolved（可升级）；指定精确版本即固定版本
+  config.rules[name] = versionSpecToRecord(version === 'latest' ? '' : version, resolvedVersion)
   writeConfig(config)
   mergeAndWriteLock(lock, { rules: { [name]: { version: resolvedVersion, registry: registryRef } } }, config.skills ?? {}, config.rules)
 
@@ -3261,13 +3358,9 @@ async function cmdPush(...args) {
         if (isNew) {
           await addArtifactToRegistry('skill', packageName, args, publishQuiet, profileVersionSyncQueue)
         } else {
-          const { registryPath, installName: inName } = resolveArtifactPath(
-            registry,
-            'skill',
-            packageName,
-            version,
-          )
-          pushArtifact('skill', inName, registryPath, version, registryRef, registryBase, registry, publishQuiet)
+          // 新版本尚未进入 registry，不能用 resolveArtifactPath（它要求版本已发布）
+          validateRegistryPath(packageName, 'Skill')
+          pushArtifact('skill', installName, packageName, version, registryRef, registryBase, registry, publishQuiet)
         }
       }
       publishedRegistryRefs.add(resolveRegistryRef(registryRef))
@@ -3314,13 +3407,9 @@ async function cmdPush(...args) {
         if (isNew) {
           await addArtifactToRegistry('rule', packageName, args, publishQuiet, profileVersionSyncQueue)
         } else {
-          const { registryPath, installName: inName } = resolveArtifactPath(
-            registry,
-            'rule',
-            packageName,
-            version,
-          )
-          pushArtifact('rule', inName, registryPath, version, registryRef, registryBase, registry, publishQuiet)
+          // 新版本尚未进入 registry，不能用 resolveArtifactPath（它要求版本已发布）
+          validateRegistryPath(packageName, 'Rule')
+          pushArtifact('rule', installName, packageName, version, registryRef, registryBase, registry, publishQuiet)
         }
       }
       publishedRegistryRefs.add(resolveRegistryRef(registryRef))
@@ -3682,7 +3771,7 @@ async function addArtifactToRegistry(kind, name, args, quiet = false, profileVer
   } else {
     const configKey = kind === 'skill' ? 'skills' : 'rules'
     config[configKey] ??= {}
-    config[configKey][registryPath] = version
+    config[configKey][registryPath] = versionSpecAfterPublish(config[configKey][registryPath], version)
     writeConfig(config)
   }
 
@@ -3744,7 +3833,7 @@ async function cmdInitSkill(...args) {
   scaffoldArtifactDir('skill', installName, registryPath, version, description || undefined)
 
   config.skills ??= {}
-  config.skills[registryPath] = version
+  config.skills[registryPath] = versionSpecToRecord('', version)
   writeConfig(config)
 
   console.log(`\nSkill created. Edit ${relative(ROOT, join(srcDir, 'SKILL.md'))} then run \`aipm publish ${registryPath}\` to publish.`)
@@ -3801,7 +3890,7 @@ async function cmdInitRule(...args) {
   scaffoldArtifactDir('rule', installName, registryPath, version, description || undefined)
 
   config.rules ??= {}
-  config.rules[registryPath] = version
+  config.rules[registryPath] = versionSpecToRecord('', version)
   writeConfig(config)
 
   const ruleMarker = ruleMarkerFilename(registryPath)
@@ -4178,8 +4267,11 @@ Primary commands:
                           Before resolve: refreshes registry index (unless --skip-registry-refresh); --on-conflict for full install only
                           Uses .aipm/profile.json for IDE; creates it on first run if missing
   list                    List declared and installed skills/rules
-  update [name] [--on-conflict=..] [--skip-registry-refresh] [-v]
-                          Update one artifact or all artifacts (same registry index refresh as install)
+  update [name] [--latest] [--on-conflict=..] [--skip-registry-refresh] [-v]
+                          Upgrade one or all artifacts, ignoring the lock: latest -> registry latest; ^x.y.z -> newest compatible
+                          (--latest: newest regardless of ^ range, spec becomes ^new). Exact x.y.z specs are pinned and kept.
+  pin <name> [version]    Pin to an exact version (default: version in lock); update will not change it
+  unpin [name]            Turn exact version(s) into ^version so update can upgrade; no name = all pinned
   publish [name] [--registry PATH] [-v] [--publish-update-profile=ask|yes|no]
                           Sync to Registry (default: package sourceRegistry; -v verbose)
                           package.json "files" may list files or directories (directories expand to all non-ignored files under them).
@@ -4233,6 +4325,8 @@ const COMMANDS = {
   install: cmdPull,
   list: cmdList,
   update: cmdUpdate,
+  pin: cmdPin,
+  unpin: cmdUnpin,
   publish: cmdPush,
   use: cmdUse,
   'init-skill': cmdInitSkill,

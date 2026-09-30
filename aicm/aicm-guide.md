@@ -56,8 +56,8 @@ aicm . --init
 ### 扫描指定子项目
 
 ```bash
-aicm ./CloudPet-Server
-aicm ./MoeCmsServer
+aicm ./project-a
+aicm ./project-b
 ```
 
 ### 输出到文件（用于对比验证）
