@@ -6,6 +6,7 @@ aicm — AI Context Manager
 判断逻辑：
   - 文件有 frontmatter（--- 包裹）且含 frontmatter: 字段 → 识别为规范文件，参与扫描
   - 文件无 frontmatter → 跳过（CLAUDE.md、README 等自动排除）
+  - 文件名相同且 inject:high 内容完全一致 → 视为副本（如 git worktree 拷贝），只注入路径最浅的一份
 
 用法：
   aicm .                          # 注入高频规范
@@ -18,10 +19,12 @@ aicm — AI Context Manager
 """
 
 import base64
+import hashlib
 import json
 import re
 import sys
 import webbrowser
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -62,6 +65,11 @@ HELP_TEXT = """aicm — AI Context Manager
   --threshold=<0.0~1.0>        设置 --check 相似度阈值，默认 0.8
   --init                       初始化所有 CLAUDE.md，注入强制执行块
   -h, --help                   显示帮助信息
+
+副本合并：
+  文件名相同且 inject:high 内容完全一致的文件（如 git worktree 中的拷贝）视为副本，
+  注入与 --check 只保留路径最浅的一份并在末尾汇总；--scan / --html 仍全部列出并标注副本。
+  同名但内容不同、不同名但内容相同的文件均全部保留。
 
 示例：
   aicm .
@@ -131,39 +139,104 @@ def extract_lines(block_text: str, min_len: int = MIN_LINE_LEN) -> list[str]:
 
 # ── 文件处理 ────────────────────────────────────────────────────────────────────
 
-def process_file(file_path: Path, search_dir: Path) -> tuple[str, list[str]] | None:
-    """处理单个规范文件，返回 (来源标识, [inject:high 块列表]) 或 None。"""
-    try:
-        content = file_path.read_text(encoding="utf-8")
-    except Exception as e:
-        print(f"[警告] 无法读取 {file_path}: {e}", file=sys.stderr)
-        return None
+@dataclass(frozen=True)
+class SpecFile:
+    """一个带 frontmatter 标识的规范文件。"""
 
-    description = parse_frontmatter(content)
-    if description is None:
-        return None
+    path: Path            # 实际文件路径
+    rel: Path             # 相对扫描根目录的路径
+    description: str      # frontmatter 描述
+    content: str          # 文件全文
+    sections: tuple[str, ...]  # inject:high 内容块（可能为空）
 
-    sections = extract_blocks(content, "high")
-    if not sections:
-        return None
+    @property
+    def source(self) -> str:
+        """注入输出中使用的来源标识。"""
+        return f"{self.rel}（{self.description}）"
 
-    rel = str(file_path.relative_to(search_dir))
-    return (f"{rel}（{description}）", sections)
+
+def collect_specs(search_dir: Path, warn: bool = False) -> list[SpecFile]:
+    """递归扫描目录，返回所有规范文件（按路径排序，未去重）。"""
+    specs: list[SpecFile] = []
+    for file_path in sorted(search_dir.rglob("*.md")):
+        if file_path.name in WHITELIST:
+            continue
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except Exception as e:
+            if warn:
+                print(f"[警告] 无法读取 {file_path}: {e}", file=sys.stderr)
+            continue
+        description = parse_frontmatter(content)
+        if description is None:
+            continue
+        specs.append(SpecFile(
+            path=file_path,
+            rel=file_path.relative_to(search_dir),
+            description=description,
+            content=content,
+            sections=tuple(extract_blocks(content, "high")),
+        ))
+    return specs
+
+
+def inject_key(spec: SpecFile) -> tuple[str, str] | None:
+    """
+    去重键：(文件名, 注入内容哈希)。无 inject:high 内容的文件不参与去重，返回 None。
+    只有「同名且注入内容逐字相同」才视为副本；同名不同内容、不同名同内容都各自保留。
+    """
+    if not spec.sections:
+        return None
+    digest = hashlib.sha256("\n\n".join(spec.sections).encode("utf-8")).hexdigest()
+    return (spec.rel.name, digest)
+
+
+def dedupe_specs(specs: list[SpecFile]) -> tuple[list[SpecFile], dict[Path, Path]]:
+    """
+    合并同名且注入内容完全相同的规范文件（典型场景：扫描根目录下的 git worktree 副本）。
+
+    每组副本只保留路径最浅（最靠近扫描根目录）的一份，层级相同时取路径字典序最小者。
+    返回 (保留的文件列表（维持原顺序）, {被合并副本的相对路径: 保留那份的相对路径})。
+    """
+    winners: dict[tuple[str, str], SpecFile] = {}
+    for spec in specs:
+        key = inject_key(spec)
+        if key is None:
+            continue
+        current = winners.get(key)
+        if current is None or _depth_order(spec) < _depth_order(current):
+            winners[key] = spec
+
+    kept: list[SpecFile] = []
+    merged: dict[Path, Path] = {}
+    for spec in specs:
+        key = inject_key(spec)
+        if key is None or winners[key] is spec:
+            kept.append(spec)
+        else:
+            merged[spec.rel] = winners[key].rel
+    return kept, merged
+
+
+def _depth_order(spec: SpecFile) -> tuple[int, str]:
+    return (len(spec.rel.parts), spec.rel.as_posix())
+
+
+def merged_note(merged: dict[Path, Path]) -> str:
+    """去重汇总提示（单行，不逐条列出副本，避免撑大输出）。"""
+    return f"（已合并 {len(merged)} 份同名且注入内容相同的副本，各保留路径最浅的一份；aicm --scan 可查看明细）"
 
 
 # ── 命令：注入 ──────────────────────────────────────────────────────────────────
 
 def cmd_inject(search_dir: Path) -> None:
     """默认模式：输出高频规范内容。"""
-    outputs: list[str] = []
-
-    for file_path in sorted(search_dir.rglob("*.md")):
-        if file_path.name in WHITELIST:
-            continue
-        result = process_file(file_path, search_dir)
-        if result:
-            source, sections = result
-            outputs.append(f"### 来自 {source}\n\n" + "\n\n".join(sections))
+    specs, merged = dedupe_specs(collect_specs(search_dir, warn=True))
+    outputs = [
+        f"### 来自 {spec.source}\n\n" + "\n\n".join(spec.sections)
+        for spec in specs
+        if spec.sections
+    ]
 
     if not outputs:
         print("（未发现带 frontmatter 标识的规范文件，无内容注入）")
@@ -175,6 +248,8 @@ def cmd_inject(search_dir: Path) -> None:
     print()
     print("\n\n---\n\n".join(outputs))
     print()
+    if merged:
+        print(merged_note(merged))
     print("=" * 50)
 
 
@@ -191,15 +266,11 @@ def cmd_check(search_dir: Path, threshold: float) -> None:
     claude_lines = extract_lines(claude_content)
 
     spec_lines: list[tuple[str, str]] = []
-    for file_path in sorted(search_dir.rglob("*.md")):
-        if file_path.name in WHITELIST:
-            continue
-        result = process_file(file_path, search_dir)
-        if result:
-            source, sections = result
-            for section in sections:
-                for line in extract_lines(section):
-                    spec_lines.append((source, line))
+    specs, merged = dedupe_specs(collect_specs(search_dir, warn=True))
+    for spec in specs:
+        for section in spec.sections:
+            for line in extract_lines(section):
+                spec_lines.append((spec.source, line))
 
     if not spec_lines:
         print("（未发现高频内容块，无需检测）")
@@ -232,6 +303,8 @@ def cmd_check(search_dir: Path, threshold: float) -> None:
             print(f"  CLAUDE.md：{claude_line}")
             print()
 
+    if merged:
+        print(merged_note(merged))
     print("=" * 50)
 
 
@@ -265,24 +338,25 @@ def render_tree(node: dict, prefix: str = "") -> list[str]:
     return lines
 
 
+def duplicate_mark(rel: Path, merged: dict[Path, Path]) -> str:
+    """--scan / --html 中给被合并的副本追加的标注；非副本返回空串。"""
+    kept = merged.get(rel)
+    return f"【副本：注入内容同 {kept}，注入时已合并】" if kept else ""
+
+
 def cmd_scan(search_dir: Path) -> None:
     """扫描模式：列出所有规范文件，按目录层级输出文件树。"""
-    entries: list[tuple[Path, str]] = []
-
-    for file_path in sorted(search_dir.rglob("*.md")):
-        if file_path.name in WHITELIST:
-            continue
-        try:
-            content = file_path.read_text(encoding="utf-8")
-        except Exception:
-            continue
-        description = parse_frontmatter(content)
-        if description is not None:
-            rel = file_path.relative_to(search_dir)
-            entries.append((rel, description))
+    specs = collect_specs(search_dir)
+    _, merged = dedupe_specs(specs)
+    entries: list[tuple[Path, str]] = [
+        (spec.rel, spec.description + duplicate_mark(spec.rel, merged)) for spec in specs
+    ]
 
     print("=" * 50)
-    print(f"规范文件树（共 {len(entries)} 个文件）")
+    if merged:
+        print(f"规范文件树（共 {len(entries)} 个文件，其中 {len(merged)} 个为同名同内容副本，注入时合并）")
+    else:
+        print(f"规范文件树（共 {len(entries)} 个文件）")
     print("=" * 50)
 
     if not entries:
@@ -626,18 +700,12 @@ def cmd_html(search_dir: Path, output_path: Path, auto_open: bool) -> None:
 
     assets_dir = output_path.parent / f"{output_path.stem}_files"
 
-    for file_path in sorted(search_dir.rglob("*.md")):
-        if file_path.name in WHITELIST:
-            continue
-        try:
-            content = file_path.read_text(encoding="utf-8")
-        except Exception:
-            continue
-        description = parse_frontmatter(content)
-        if description is None:
-            continue
+    specs = collect_specs(search_dir)
+    _, merged = dedupe_specs(specs)
 
-        rel = file_path.relative_to(search_dir)
+    for spec in specs:
+        file_path, content, rel = spec.path, spec.content, spec.rel
+        description = spec.description + duplicate_mark(rel, merged)
         raw_uri = file_path.resolve().as_uri()
 
         if marked_js is None:
