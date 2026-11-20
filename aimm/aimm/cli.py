@@ -272,6 +272,35 @@ def cmd_refine(args: argparse.Namespace) -> None:
     refresh(repo, args)
 
 
+def cmd_remove(args: argparse.Namespace) -> None:
+    repo = resolve_repo(args.repo)
+    targets = []
+    for name in args.names:
+        item = repo.find_memory(name)
+        if item is None:
+            raise AimmError(f"未找到记忆：{name}（未做任何改动）")
+        if item.path not in [t.path for t in targets]:
+            targets.append(item)
+
+    print(f"将删除 {len(targets)} 条记忆：")
+    for item in targets:
+        print(f"  {item.name or item.key} — {item.description}")
+        if item.front.meta.get("promoted"):
+            print(f"    已提炼出的资产 {item.front.meta['promoted']} 不受影响，会保留")
+    if args.dry_run:
+        print("预览（未执行）")
+        return
+    confirm("确认删除？", args.yes)
+
+    for item in targets:
+        item.path.unlink()
+        repo.remove_index(item.path.name)
+    names = "、".join(item.name or item.key for item in targets)
+    print(f"已删除：{names}")
+    auto_commit(repo, f"aimm: 删除记忆 {names}")
+    refresh(repo, args)
+
+
 def cmd_lint(args: argparse.Namespace) -> int:
     repo = resolve_repo(args.repo)
     findings = lint_mod.run(repo)
@@ -389,6 +418,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--description", help="资产描述（默认沿用记忆的描述）")
     p.add_argument("--file", help="整理好的资产正文；缺省时以记忆正文为草稿")
     p.add_argument("--dry-run", action="store_true", help="只预览，不创建")
+    p.add_argument("--yes", action="store_true", help="跳过确认")
+    p.add_argument("--no-sync", action="store_true", help="不刷新工具入口文件")
+
+    p = command("remove", cmd_remove, "删除记忆：删文件、去掉索引条目、提交并刷新工具入口文件")
+    p.add_argument("names", nargs="+", metavar="name", help="要删除的记忆 name，可给多个")
+    p.add_argument("--dry-run", action="store_true", help="只预览，不删除")
     p.add_argument("--yes", action="store_true", help="跳过确认")
     p.add_argument("--no-sync", action="store_true", help="不刷新工具入口文件")
 

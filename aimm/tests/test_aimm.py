@@ -164,6 +164,53 @@ class MemoryTest(AimmTestCase):
         self.assertEqual(self.run_cli("index")[0], 0)
 
 
+class RemoveTest(AimmTestCase):
+    def test_remove_deletes_file_index_and_refreshes_block(self) -> None:
+        self.add("keep", desc="保留的记忆")
+        self.add("drop", desc="要删的记忆")
+        index = self.repo.index_path
+        index.write_text(index.read_text(encoding="utf-8") + "- 手写的一行备注\n", encoding="utf-8")
+        self.run_ok("sync", "--tool", "claude")
+
+        out = self.run_ok("remove", "drop", "--dry-run")
+        self.assertIn("要删的记忆", out)
+        self.assertTrue((self.root / "memory/drop.md").exists())  # 预览不删除
+
+        self.run_ok("remove", "drop", "--yes")
+        self.assertFalse((self.root / "memory/drop.md").exists())
+        text = self.repo.index_text()
+        self.assertNotIn("drop.md", text)
+        self.assertIn("](keep.md)", text)
+        self.assertIn("手写的一行备注", text)  # 其他条目原样保留
+        block = (self.home / ".claude/CLAUDE.md").read_text(encoding="utf-8")
+        self.assertNotIn("要删的记忆", block)
+        self.assertIn("保留的记忆", block)
+        self.assertEqual(self.codes(), [])
+
+    def test_remove_requires_confirmation(self) -> None:
+        self.add("careful")
+        with mock.patch("sys.stdin", io.StringIO("")):
+            code, _, err = self.run_cli("remove", "careful")
+        self.assertEqual(code, 2)
+        self.assertIn("需要确认", err)
+        self.assertTrue((self.root / "memory/careful.md").exists())
+
+    def test_remove_unknown_name_changes_nothing(self) -> None:
+        self.add("real")
+        code, _, err = self.run_cli("remove", "real", "ghost", "--yes")
+        self.assertEqual(code, 2)
+        self.assertIn("未找到记忆：ghost", err)
+        self.assertTrue((self.root / "memory/real.md").exists())  # 有一个找不到就整体不执行
+
+    def test_remove_keeps_promoted_asset(self) -> None:
+        self.add("origin")
+        self.run_ok("refine", "origin", "--as", "rule", "--yes")
+        out = self.run_ok("remove", "origin", "--yes")
+        self.assertIn("会保留", out)
+        self.assertTrue((self.root / "assets/rules/origin/origin.md").is_file())
+        self.assertEqual(self.codes(), [])
+
+
 class RefineTest(AimmTestCase):
     def test_refine_rule_creates_asset_and_marks_memory(self) -> None:
         self.add("commit-style", body="提交信息用中文，标题不超过 50 字。", desc="提交信息格式")

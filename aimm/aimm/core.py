@@ -248,6 +248,15 @@ class Repo:
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    def remove_index(self, filename: str) -> None:
+        """删除指向某个文件的索引条目；其余条目原样保留。"""
+        text = self.index_text()
+        if not text:
+            return
+        link = f"]({filename})"
+        lines = [line for line in text.split("\n") if link not in line]
+        self.index_path.write_text("\n".join(lines).rstrip("\n") + "\n", encoding="utf-8")
+
     def rebuild_index(self) -> None:
         lines = [self.index_line(item) for item in self.memories() if item.front.present]
         self.memory_dir.mkdir(parents=True, exist_ok=True)
