@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aimm"
+version = "0.1.0"
+description = "AI Memory Manager — 个人 AI 资产的记录、提炼与保存"
+requires-python = ">=3.9"
+
+[project.scripts]
+aimm = "aimm.cli:main"
+
+[tool.setuptools]
+packages = ["aimm"]

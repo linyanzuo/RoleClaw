@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""免安装启动脚本：python3 aimm/bin/aimm <命令>"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from aimm.cli import main  # noqa: E402
+
+sys.exit(main())
